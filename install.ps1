@@ -169,14 +169,15 @@ function Build-Plugin($inst, $outDll) {
 }
 
 # ---------- 2b. 清理早期版本遗留的图标文件 ----------
-# 早期调试版本曾向 Program 目录与 %USERPROFILE%\NcNamer\ 写入 NcNamer_icon*.* ，
-# 现已不再使用自定义图标，安装/卸载时一并清除，避免残留。
+# 早期调试版本写过 NcNamer_icon*.png / .ico 到 Program 目录和 %USERPROFILE%\NcNamer\。
+# 现在唯一在用的是 NcNamer_icon64.ico（命令图标的源文件），必须保留。
 function Remove-LegacyIcons($inst) {
     $dirs = @($inst.ProgramDir, (Join-Path $env:USERPROFILE 'NcNamer'))
     $targets = New-Object System.Collections.Generic.List[string]
     foreach ($d in $dirs) {
         if (-not (Test-Path $d)) { continue }
         foreach ($f in @(Get-ChildItem -Path $d -Filter 'NcNamer_icon*' -File -ErrorAction SilentlyContinue)) {
+            if ($f.Name -ieq 'NcNamer_icon64.ico') { continue }
             $targets.Add($f.FullName)
         }
     }
@@ -245,6 +246,49 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
         $null = Backup-File $layout $backupRoot 'CommandsLayout'
         [IO.File]::WriteAllText($layout, $result, (New-Object System.Text.UTF8Encoding($false)))
         return $script:RemovedCount
+    }
+    return 0
+}
+
+# ---------- 3c. 投放命令图标 ----------
+# Cimatron 的图标机制：CreateCommand 时按命令 ID 在 DataDir\Images\Commands
+# 里找 {ID}_*.ico，找不到就用 99999_Missing.ico（黄底红叉占位图）。
+# 所以把图标复制成 {ID}_NcNamer.ico 即可，插件启动时也会自己再做一次。
+function Get-ApiCommandId([string]$key) {
+    $text = $key.ToLowerInvariant()
+    $sum = 0
+    foreach ($ch in $text.ToCharArray()) {
+        $v = [int]$ch - 65 + 1
+        if ($v -ge 0) { $sum += $v }
+        elseif ([int]$ch -ge 48 -and [int]$ch -le 57) { $sum += ([int]$ch - 48) }
+    }
+    return 49152 + ($sum % 4096)
+}
+
+function Install-CommandIcon($inst, $backupRoot) {
+    $src = Join-Path $CommonDir 'NcNamer_icon64.ico'
+    if (-not (Test-Path $src)) { return '图标源文件缺失' }
+
+    $imgDir = Join-Path $inst.DataDir 'Images\Commands'
+    if (-not (Test-Path $imgDir)) { return ('图标目录不存在: ' + $imgDir) }
+
+    $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
+    $dst = Join-Path $imgDir ($id + '_NcNamer.ico')
+    try {
+        Copy-Item $src $dst -Force
+        return $null
+    } catch {
+        return ('图标复制失败: ' + $_.Exception.Message)
+    }
+}
+
+function Remove-CommandIcon($inst) {
+    $imgDir = Join-Path $inst.DataDir 'Images\Commands'
+    if (-not (Test-Path $imgDir)) { return 0 }
+    $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
+    $dst = Join-Path $imgDir ($id + '_NcNamer.ico')
+    if (Test-Path $dst) {
+        try { Remove-Item $dst -Force; return 1 } catch { }
     }
     return 0
 }
@@ -343,6 +387,8 @@ foreach ($inst in $installs) {
         if ($gone.Count -gt 0) { Say ("  已清除遗留图标文件 " + $gone.Count + " 个") 'Green' }
         $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
         if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
+        $iconGone = Remove-CommandIcon $inst
+        if ($iconGone -gt 0) { Say '  已移除命令图标' 'Green' }
         if (Test-Path $inst.IniPath) {
             $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version)
             $kept = [IO.File]::ReadAllLines($inst.IniPath) | Where-Object { $_ -notmatch '^\s*NcNamer[^=]*=' }
@@ -378,8 +424,11 @@ foreach ($inst in $installs) {
     $dllPath = Join-Path $inst.ProgramDir $dllName
     if (Test-Path $dllPath) { $null = Backup-File $dllPath $backupRoot ('dll_' + $inst.Version) }
 
-    # 图标资源在编译时用 /win32icon 嵌入 DLL，无需额外文件；这里清掉早期版本留下的图标散件
-    foreach ($legacy in @('NcNamer_icon64.png','NcNamer_icon32.png','NcNamer_icon16.png','NcNamer_icon64.ico')) {
+    # 图标源文件必须和插件 DLL 放在同一目录，插件启动时据此投放到 Images\Commands
+    Copy-Item (Join-Path $CommonDir 'NcNamer_icon64.ico') (Join-Path $inst.ProgramDir 'NcNamer_icon64.ico') -Force
+
+    # 清掉早期版本留下的多余图标散件（保留 NcNamer_icon64.ico）
+    foreach ($legacy in @('NcNamer_icon64.png','NcNamer_icon32.png','NcNamer_icon16.png')) {
         $p = Join-Path $inst.ProgramDir $legacy
         if (Test-Path $p) { try { Remove-Item $p -Force } catch { } }
     }
@@ -417,6 +466,12 @@ foreach ($inst in $installs) {
     # 6b-2. 清掉历史版本堆积出来的匿名工具栏分组
     $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
     if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
+
+    # 6b-3. 投放命令图标（Cimatron 按命令 ID 在 Images\Commands 里查找）
+    $iconErr = Install-CommandIcon $inst $backupRoot
+    $iconId = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
+    if ($iconErr) { Say ("  图标安装失败: " + $iconErr) 'Yellow' }
+    else { Say ("  图标已安装: " + $iconId + "_NcNamer.ico") 'Green' }
 
     # 6c. 后处理目录
     foreach ($pd in $inst.PostDirs) {

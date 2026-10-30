@@ -16,6 +16,7 @@ namespace NcNamerAutoService
         public ApiCommand AppendCommand()
         {
             NcAutoExportService.Start();
+            NcAutoExportService.EnsureNativeIcon();
             var cmd = new ApiCommand
             {
                 Name = "NcNamerAutoService2024",
@@ -29,44 +30,25 @@ namespace NcNamerAutoService
                 Application = ApiApplications.Nc | ApiApplications.NcPart,
                 ExecuteCommand = new NcAutoServiceCommand(),
                 IconSize = ApiIconSize.Large,
-                IconSource = ResolveIcon(),
                 License = "1"
             };
             return cmd;
         }
 
-        // 图标以 Win32 图标资源的形式嵌在插件 DLL 里（编译时 /win32icon），
-        // Cimatron 通过 LoadIcon 读取。找不到时返回 null，退回默认图标。
-        private static CimWpfContracts.ImageIdentifier ResolveIcon()
-        {
-            try
-            {
-                string dllPath = typeof(NcDumpPlugin).Assembly.Location;
-                NcAutoExportService.AppendLog("Icon: dll=" + dllPath + " exists=" + File.Exists(dllPath));
-                if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath)) return null;
-
-                var identifier = new CimWpfContracts.IconIdentifier(dllPath, 32512, CimWpfContracts.ImageSize.Large);
-                try
-                {
-                    // 用反射探测，避免把 WPF 程序集变成编译期依赖
-                    var helperType = typeof(CimUIInfrastructure.ResourceInteropHelper);
-                    var probeMethod = helperType.GetMethod("GetImage", new[] { typeof(CimWpfContracts.ImageIdentifier) });
-                    object probe = probeMethod.Invoke(null, new object[] { identifier });
-                    NcAutoExportService.AppendLog("Icon: probe=" + (probe == null ? "null" : probe.GetType().Name));
-                }
-                catch (Exception pe)
-                {
-                    Exception inner = pe.InnerException ?? pe;
-                    NcAutoExportService.AppendLog("Icon: probe failed " + inner.Message);
-                }
-                return identifier;
-            }
-            catch (Exception ex)
-            {
-                NcAutoExportService.AppendLog("Icon load skipped: " + ex.Message);
-                return null;
-            }
-        }
+        // 图标走 Cimatron 的原生机制：按命令 ID 在 DataDir\Images\Commands 下找图片。
+        // 反编译 CimStreepBar 得到的规则：
+        //   CommandsRepositoryBase.CreateCommand():
+        //       string path = GetIconById(id.Id) ?? "99999_Missing.ico";
+        //       IconSource = new WpfImageIdentifier(
+        //           Path.Combine(DataDir, "Images\\Commands", path), 0);
+        //   GetIconById(id):
+        //       扫描该目录所有文件，取文件名里第一个 '_' 之前的数字做 key
+        //
+        // 所以命令 50468 的图标文件就是 50468_任何名字.ico；找不到就退回
+        // 99999_Missing.ico —— 那个黄底红叉的占位图。
+        //
+        // ApiCommand.IconSource 那条 overlay 分支要求 ico 与同名 png 同目录且目录可写，
+        // 在 Program Files 下会静默失败，因此不再使用它，直接投放原生图标文件。
     }
 
     public class NcAutoServiceCommand : ICimWpfCommand
@@ -103,6 +85,119 @@ namespace NcNamerAutoService
         private static int _myPid;
 
         internal static int MyPid { get { return _myPid; } }
+
+        private static bool _nativeIconDone;
+
+        // 把图标投放到 Cimatron 期望的 DataDir\Images\Commands\{命令ID}_*.ico
+        internal static void EnsureNativeIcon()
+        {
+            if (_nativeIconDone) return;
+            _nativeIconDone = true;
+
+            try
+            {
+                string programDir = Path.GetDirectoryName(typeof(NcDumpPlugin).Assembly.Location) ?? "";
+                string sourceIco = Path.Combine(programDir, "NcNamer_icon64.ico");
+                if (!File.Exists(sourceIco))
+                {
+                    AppendLog("Icon: source missing " + sourceIco);
+                    return;
+                }
+
+                int commandId = CalculateApiCommandId(typeof(NcDumpPlugin).FullName);
+                string fileName = commandId + "_NcNamer.ico";
+
+                foreach (string dir in CandidateCommandImageDirs(programDir))
+                {
+                    try
+                    {
+                        if (!Directory.Exists(dir)) continue;
+                        string target = Path.Combine(dir, fileName);
+                        if (File.Exists(target) && SameContent(sourceIco, target)) continue;
+                        File.Copy(sourceIco, target, true);
+                        AppendLog("Icon: installed " + target);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog("Icon: write failed " + dir + " :: " + ex.Message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Icon: failed " + ex.Message);
+            }
+        }
+
+        // DataDir 候选位置：先按自身版本号精确匹配，再兜底扫描所有已装版本
+        private static List<string> CandidateCommandImageDirs(string programDir)
+        {
+            var result = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                // programDir 形如 ...\Cimatron\Cimatron\2024.0\Program
+                // 配置目录固定在 %ProgramData%\Cimatron\Cimatron\<版本>\Data
+                string versionDir = Path.GetDirectoryName(programDir.TrimEnd('\\'));
+                string version = Path.GetFileName(versionDir);
+                if (!string.IsNullOrEmpty(version))
+                {
+                    string common = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                    string dataDir = Path.Combine(common, "Cimatron", "Cimatron", version, "Data", "Images", "Commands");
+                    if (seen.Add(dataDir)) result.Add(dataDir);
+                }
+            }
+            catch { }
+
+            try
+            {
+                string common = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                foreach (string root in new[]
+                {
+                    Path.Combine(common, "Cimatron", "Cimatron"),
+                    Path.Combine(common, "Cimatron")
+                })
+                {
+                    if (!Directory.Exists(root)) continue;
+                    foreach (string ver in Directory.GetDirectories(root))
+                    {
+                        string dataDir = Path.Combine(ver, "Data", "Images", "Commands");
+                        if (Directory.Exists(dataDir) && seen.Add(dataDir)) result.Add(dataDir);
+                    }
+                }
+            }
+            catch { }
+
+            return result;
+        }
+
+        // 复刻 Cimatron 的 CalculateApiCommandId（CimStreepBar.StreepAPICommands）
+        internal static int CalculateApiCommandId(string command)
+        {
+            string text = (command ?? string.Empty).ToLowerInvariant();
+            int sum = 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                int v = text[i] - 65 + 1;
+                if (v >= 0) sum += v;
+                else if (text[i] >= '0' && text[i] <= '9') sum += text[i] - 48;
+            }
+            return 49152 + (sum % 4096);
+        }
+
+        private static bool SameContent(string a, string b)
+        {
+            try
+            {
+                byte[] x = File.ReadAllBytes(a);
+                byte[] y = File.ReadAllBytes(b);
+                if (x.Length != y.Length) return false;
+                for (int i = 0; i < x.Length; i++) if (x[i] != y[i]) return false;
+                return true;
+            }
+            catch { return false; }
+        }
 
         internal static void Start()
         {
