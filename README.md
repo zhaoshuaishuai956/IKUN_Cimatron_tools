@@ -1,5 +1,7 @@
 # NcNamer · Cimatron NC 后处理自动命名插件
 
+[![Release](https://img.shields.io/github/v/release/zhaoshuaishuai956/cimatron-nc-namer)](https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest)
+
 Cimatron BJ 后处理完成后，自动把 NC 程序重命名为：
 
 ```
@@ -13,11 +15,11 @@ Cimatron BJ 后处理完成后，自动把 NC 程序重命名为：
 - 支持版本：**Cimatron 2024 / 2025 / 2026**
 - 运行平台：Windows x64，.NET Framework 4.x，需要管理员权限安装
 - 命名规则图解：[`NC命名规则.png`](NC命名规则.png) / [`naming_rule.html`](naming_rule.html)
-- 最终安装包：[`dist/NcNamer_Setup_v2_nc.bj.zip`](dist/NcNamer_Setup_v2_nc.bj.zip)
+- **下载安装包**：[Releases 页面](https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest) → `NcNamer_Setup_v2_nc.bj.zip`
 
 ## 一键安装
 
-1. 把整个仓库（或解压后的安装包）拷贝到目标电脑，U 盘、网络共享均可。
+1. 从 [Releases](https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest) 下载 `NcNamer_Setup_v2_nc.bj.zip` 并解压；也可直接拷贝整个仓库，U 盘、网络共享均可。
 2. 右键以管理员身份运行 `安装.cmd`，脚本会自动请求提权。
 3. 脚本自动探测本机所有受支持的 Cimatron 安装并逐个部署。
 4. 安装完成后**重启 Cimatron**，插件在启动时自动加载。
@@ -216,9 +218,10 @@ $refs = @(
 - **v1**：文件名末尾为 `空格 + nc`（无扩展名），已不再发布。
 - 自定义命令图标方案已放弃，命令沿用 Cimatron 默认图标。
 
-## 最终安装包
+## 下载安装包
 
-`dist/NcNamer_Setup_v2_nc.bj.zip`
+从 **[Releases 页面](https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest)** 下载 `NcNamer_Setup_v2_nc.bj.zip`。
 
+- 当前版本：[v2.0.0](https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.0.0)
 - SHA256：`12D7BD8F3FDD70F10E9DF6D1CBF09F9ACC38EAA833BF3600066057604B207197`
-- 解压后与仓库根目录的安装器内容一致，可直接拷贝到目标电脑运行 `安装.cmd`。
+- 仓库内也留有一份同内容的副本：[`dist/NcNamer_Setup_v2_nc.bj.zip`](dist/NcNamer_Setup_v2_nc.bj.zip)，解压后即为安装器目录，可直接运行 `安装.cmd`。
