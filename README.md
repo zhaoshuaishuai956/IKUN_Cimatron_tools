@@ -255,7 +255,8 @@ IKUN_Cimatron_tools/
 
 ## 版本说明
 
-- **v3.0（当前）**：重组为「IKUN思美创工具箱」，顶级菜单独立于 NC；命名插件更名为 **NC重命名**，归入 工具箱 → NC 分组；仓库改为 `plugins/<插件名>/` 结构，便于后续扩展；安装脚本写入 `ResetApiCommands =0` 确保菜单能正常插入。
+- **v3.1（当前）**：修复首次启动提示不出现（标记改为窗体显示后才写入，失败自动重试）。
+- **v3.0**：重组为「IKUN思美创工具箱」，顶级菜单独立于 NC；命名插件更名为 **NC重命名**，归入 工具箱 → NC 分组；仓库改为 `plugins/<插件名>/` 结构，便于后续扩展；安装脚本写入 `ResetApiCommands =0` 确保菜单能正常插入。
 - **v2.4**：更名为 IKUN tools；自定义 IKUN 图标（7 种尺寸）；首次加载提示。
 - **v2.3**：修复命令图标始终显示黄底红叉（改用 Cimatron 原生 `Images\Commands` 机制）。
 - **v2.2**：修复每次启动工具栏按钮多一个（`ToolbarName` 留空导致匿名分组累积）。
@@ -268,8 +269,8 @@ IKUN_Cimatron_tools/
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/IKUN_Cimatron_tools/releases/latest |
-| 版本 v3.0 | https://github.com/zhaoshuaishuai956/IKUN_Cimatron_tools/releases/tag/v3.0 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/IKUN_Cimatron_tools/releases/download/v3.0/IKUN_Cimatron_tools_Setup.zip |
+| 版本 v3.1 | https://github.com/zhaoshuaishuai956/IKUN_Cimatron_tools/releases/tag/v3.1 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/IKUN_Cimatron_tools/releases/download/v3.1/IKUN_Cimatron_tools_Setup.zip |
 
 下载后可在 PowerShell 中校验（SHA256 见 Releases 页面说明）：
 

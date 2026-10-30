@@ -92,7 +92,7 @@ namespace NcNamerAutoService
 
         private static bool _nativeIconDone;
 
-        // 每个版本只在第一次成功加载时提示一次，之后不再打扰
+        // 每个版本只在第一次真正弹出后记一次，之后不再打扰
         private static void ShowFirstRunNotice()
         {
             try
@@ -102,8 +102,7 @@ namespace NcNamerAutoService
                 string marker = Path.Combine(dir, "ikun_toolbox_v3.flag");
                 if (File.Exists(marker)) return;
 
-                File.WriteAllText(marker, DateTime.Now.ToString("o"), new UTF8Encoding(false));
-                AppendLog("IKUN tools loaded - showing first-run notice");
+                AppendLog("IKUN思美创工具箱 - showing first-run notice");
 
                 // 用独立线程弹非模态窗体，绝不阻塞 Cimatron 启动
                 Thread t = new Thread(delegate ()
@@ -117,28 +116,29 @@ namespace NcNamerAutoService
                         form.MaximizeBox = false;
                         form.MinimizeBox = false;
                         form.TopMost = true;
-                        form.ClientSize = new System.Drawing.Size(360, 150);
+                        form.ClientSize = new System.Drawing.Size(370, 150);
                         form.BackColor = System.Drawing.Color.White;
 
                         var title = new System.Windows.Forms.Label();
                         title.Text = "IKUN思美创工具箱 已加载";
-                        title.Font = new System.Drawing.Font("Microsoft YaHei", 16F, System.Drawing.FontStyle.Bold);
+                        title.Font = new System.Drawing.Font("Microsoft YaHei", 15F, System.Drawing.FontStyle.Bold);
                         title.ForeColor = System.Drawing.Color.FromArgb(31, 78, 121);
                         title.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-                        title.SetBounds(10, 22, 340, 40);
+                        title.SetBounds(10, 22, 350, 40);
                         form.Controls.Add(title);
 
                         var sub = new System.Windows.Forms.Label();
-                        sub.Text = "NC重命名：后处理完成后自动重命名程序" + Environment.NewLine + "菜单位置：顶级菜单 → IKUN思美创工具箱 → NC";
+                        sub.Text = "NC重命名：后处理完成后自动重命名程序" + Environment.NewLine
+                                 + "菜单位置：IKUN思美创工具箱 → NC";
                         sub.Font = new System.Drawing.Font("Microsoft YaHei", 9F);
                         sub.ForeColor = System.Drawing.Color.DimGray;
                         sub.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-                        sub.SetBounds(10, 64, 340, 44);
+                        sub.SetBounds(10, 64, 350, 44);
                         form.Controls.Add(sub);
 
                         var ok = new System.Windows.Forms.Button();
                         ok.Text = "知道了";
-                        ok.SetBounds(140, 110, 80, 28);
+                        ok.SetBounds(145, 112, 80, 28);
                         ok.Click += delegate { form.Close(); };
                         form.Controls.Add(ok);
                         form.AcceptButton = ok;
@@ -153,8 +153,17 @@ namespace NcNamerAutoService
                         }
                         catch { }
 
+                        // 标记只在窗体真正显示后才写：写早了会被自动化测试/后台启动白白吃掉，
+                        // 用户就再也看不到提示了。
                         form.Shown += delegate
                         {
+                            try
+                            {
+                                File.WriteAllText(marker, DateTime.Now.ToString("o"), new UTF8Encoding(false));
+                                AppendLog("IKUN思美创工具箱 - notice shown");
+                            }
+                            catch { }
+
                             var timer = new System.Windows.Forms.Timer();
                             timer.Interval = 6000;
                             timer.Tick += delegate { timer.Stop(); try { form.Close(); } catch { } };
@@ -165,7 +174,9 @@ namespace NcNamerAutoService
                     }
                     catch (Exception ex)
                     {
+                        // 没弹出来就不写标记，下次启动重试
                         AppendLog("Notice failed: " + ex.Message);
+                        try { if (File.Exists(marker)) File.Delete(marker); } catch { }
                     }
                 });
                 t.IsBackground = true;
