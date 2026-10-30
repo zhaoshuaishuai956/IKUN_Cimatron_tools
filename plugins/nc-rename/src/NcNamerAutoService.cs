@@ -92,17 +92,19 @@ namespace NcNamerAutoService
 
         private static bool _nativeIconDone;
 
-        // 每个版本只在第一次真正弹出后记一次，之后不再打扰
-        private static void ShowFirstRunNotice()
+        // 每次 Cimatron 启动（每个新实例）都提示一次。
+        // _noticeShown 只保证同一个进程内不会重复弹，跨实例互不影响。
+        private static bool _noticeShown;
+
+        private static void ShowStartupNotice()
         {
+            if (_noticeShown) return;
+            _noticeShown = true;
+
             try
             {
-                string dir = NcNamerDir();
-                Directory.CreateDirectory(dir);
-                string marker = Path.Combine(dir, "ikun_toolbox_v3.flag");
-                if (File.Exists(marker)) return;
-
-                AppendLog("IKUN思美创工具箱 - showing first-run notice");
+                Directory.CreateDirectory(NcNamerDir());
+                AppendLog("IKUN思美创工具箱 - showing startup notice (pid=" + _myPid + ")");
 
                 // 用独立线程弹非模态窗体，绝不阻塞 Cimatron 启动
                 Thread t = new Thread(delegate ()
@@ -153,16 +155,9 @@ namespace NcNamerAutoService
                         }
                         catch { }
 
-                        // 标记只在窗体真正显示后才写：写早了会被自动化测试/后台启动白白吃掉，
-                        // 用户就再也看不到提示了。
                         form.Shown += delegate
                         {
-                            try
-                            {
-                                File.WriteAllText(marker, DateTime.Now.ToString("o"), new UTF8Encoding(false));
-                                AppendLog("IKUN思美创工具箱 - notice shown");
-                            }
-                            catch { }
+                            AppendLog("IKUN思美创工具箱 - notice shown");
 
                             var timer = new System.Windows.Forms.Timer();
                             timer.Interval = 6000;
@@ -174,9 +169,7 @@ namespace NcNamerAutoService
                     }
                     catch (Exception ex)
                     {
-                        // 没弹出来就不写标记，下次启动重试
                         AppendLog("Notice failed: " + ex.Message);
-                        try { if (File.Exists(marker)) File.Delete(marker); } catch { }
                     }
                 });
                 t.IsBackground = true;
@@ -325,8 +318,8 @@ namespace NcNamerAutoService
                 AppendLog("IKUN思美创工具箱 started (pid=" + _myPid + ")");
             }
 
-            // 放在锁外，避免弹窗逻辑影响后续启动
-            try { ShowFirstRunNotice(); } catch { }
+            // 放在锁外：每个 Cimatron 实例启动都会提示一次
+            try { ShowStartupNotice(); } catch { }
         }
 
         private static void OnRenamed(object sender, RenamedEventArgs e)
