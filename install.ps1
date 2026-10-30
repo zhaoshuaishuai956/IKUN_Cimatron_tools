@@ -156,11 +156,8 @@ function Build-Plugin($inst, $outDll) {
     }
 
     $tmpOut = Join-Path $env:TEMP ('NcNamerAutoService_' + [Guid]::NewGuid().ToString('N') + '.dll')
-    # 图标以 Win32 资源嵌入 DLL，Cimatron 才能通过 LoadIcon 取到
-    $iconArg = @()
-    $icoPath = Join-Path $CommonDir 'NcNamer_icon64.ico'
-    if (Test-Path $icoPath) { $iconArg = @('/win32icon:' + $icoPath) }
-    $out = & $csc /nologo /target:library /platform:x64 /out:$tmpOut $iconArg $refs $PluginSrc 2>&1 | Out-String
+    # 图标注放走 Images\Commands 机制（见 Install-CommandIcon），不再往 DLL 里嵌资源
+    $out = & $csc /nologo /target:library /platform:x64 /out:$tmpOut $refs $PluginSrc 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpOut)) {
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
         return ("编译失败: " + $out.Trim() + "`n引用: " + ($refs -join ' '))
@@ -313,10 +310,13 @@ function Install-CommandIcon($inst, $backupRoot) {
     $imgDir = Join-Path $inst.DataDir 'Images\Commands'
     if (-not (Test-Path $imgDir)) { return ('图标目录不存在: ' + $imgDir) }
 
+    # 注意：$id 是 Int32，不能用 $id + '_x.ico'（左边是数字时 '+' 会当成数值加法）
     $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
-    $dst = Join-Path $imgDir ($id + '_IKUNtools.ico')
+    $fileName = '{0}_IKUNtools.ico' -f $id
+    $dst = Join-Path $imgDir $fileName
     try {
         Copy-Item $src $dst -Force
+        if (-not (Test-Path $dst)) { return ('图标复制后未找到: ' + $dst) }
         return $null
     } catch {
         return ('图标复制失败: ' + $_.Exception.Message)
@@ -329,7 +329,7 @@ function Remove-CommandIcon($inst) {
     $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
     $removed = 0
     foreach ($suffix in @('_IKUNtools.ico', '_NcNamer.ico')) {
-        $dst = Join-Path $imgDir ($id + $suffix)
+        $dst = Join-Path $imgDir ('{0}{1}' -f $id, $suffix)
         if (Test-Path $dst) {
             try { Remove-Item $dst -Force; $removed++ } catch { }
         }
@@ -514,8 +514,12 @@ foreach ($inst in $installs) {
     # 6b-3. 投放命令图标（Cimatron 按命令 ID 在 Images\Commands 里查找）
     $iconErr = Install-CommandIcon $inst $backupRoot
     $iconId = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
-    if ($iconErr) { Say ("  图标安装失败: " + $iconErr) 'Yellow' }
-    else { Say ("  图标已安装: " + $iconId + "_IKUNtools.ico") 'Green' }
+    $iconFile = '{0}_IKUNtools.ico' -f $iconId
+    if ($iconErr) {
+        Say ("  图标安装失败: " + $iconErr) 'Yellow'
+    } else {
+        Say ("  图标已安装: " + $iconFile) 'Green'
+    }
 
     # 6c. 后处理目录
     foreach ($pd in $inst.PostDirs) {
