@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,11 +22,15 @@ namespace NcNamerAutoService
                 Name = "NcNamerAutoService2024",
                 // 必须给固定名字。留空时 Cimatron 每次启动都会新建一个匿名工具栏组
                 // （CommandsLayout.xml 里的 Group -1xxxxxxxxx），按钮数量随启动次数增长。
-                ToolbarName = "IKUN tools",
-                MenuPath = "NC\nIKUN tools",
-                Caption = "IKUN tools",
-                ToolTip = "自动 NC 命名服务（BJ 后处理后自动重命名）",
-                Description = "IKUN 已加载 - 后处理完成后自动把 NC 程序命名为 序号-刀名-刀长 nc.bj",
+                // 同一工具箱下的多个插件共用这个 ToolbarName，就会合并到同一条工具栏。
+                ToolbarName = "IKUN思美创工具箱",
+                // MenuPath 只取前两段（源码按 '@' 切分）：第 1 段是顶级菜单，第 2 段是分组。
+                // 顶级菜单不存在时 Cimatron 会新建一个，所以这里会生成与 NC 并列的
+                // 「IKUN思美创工具箱」菜单；后续插件按领域加分组（NC / 刀具 / 电极 …）。
+                MenuPath = "IKUN思美创工具箱\nNC",
+                Caption = "NC重命名",
+                ToolTip = "自动 NC 命名（BJ 后处理后自动重命名）",
+                Description = "IKUN思美创工具箱 · NC重命名：后处理完成后自动命名为 序号-刀名-刀长 nc.bj",
                 Application = ApiApplications.Nc | ApiApplications.NcPart,
                 ExecuteCommand = new NcAutoServiceCommand(),
                 IconSize = ApiIconSize.Large,
@@ -95,7 +99,7 @@ namespace NcNamerAutoService
             {
                 string dir = NcNamerDir();
                 Directory.CreateDirectory(dir);
-                string marker = Path.Combine(dir, "ikun_loaded_v2.4.flag");
+                string marker = Path.Combine(dir, "ikun_toolbox_v3.flag");
                 if (File.Exists(marker)) return;
 
                 File.WriteAllText(marker, DateTime.Now.ToString("o"), new UTF8Encoding(false));
@@ -107,7 +111,7 @@ namespace NcNamerAutoService
                     try
                     {
                         var form = new System.Windows.Forms.Form();
-                        form.Text = "IKUN tools";
+                        form.Text = "IKUN思美创工具箱";
                         form.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                         form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                         form.MaximizeBox = false;
@@ -117,7 +121,7 @@ namespace NcNamerAutoService
                         form.BackColor = System.Drawing.Color.White;
 
                         var title = new System.Windows.Forms.Label();
-                        title.Text = "IKUN 已加载";
+                        title.Text = "IKUN思美创工具箱 已加载";
                         title.Font = new System.Drawing.Font("Microsoft YaHei", 16F, System.Drawing.FontStyle.Bold);
                         title.ForeColor = System.Drawing.Color.FromArgb(31, 78, 121);
                         title.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -125,7 +129,7 @@ namespace NcNamerAutoService
                         form.Controls.Add(title);
 
                         var sub = new System.Windows.Forms.Label();
-                        sub.Text = "NC 后处理完成后会自动重命名程序" + Environment.NewLine + "菜单位置：NC → IKUN tools";
+                        sub.Text = "NC重命名：后处理完成后自动重命名程序" + Environment.NewLine + "菜单位置：顶级菜单 → IKUN思美创工具箱 → NC";
                         sub.Font = new System.Drawing.Font("Microsoft YaHei", 9F);
                         sub.ForeColor = System.Drawing.Color.DimGray;
                         sub.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -307,7 +311,7 @@ namespace NcNamerAutoService
                 // 订阅它以免漏掉请求。
                 _watcher.Renamed += OnRenamed;
                 _watcher.EnableRaisingEvents = true;
-                AppendLog("IKUN tools started (pid=" + _myPid + ")");
+                AppendLog("IKUN思美创工具箱 started (pid=" + _myPid + ")");
             }
 
             // 放在锁外，避免弹窗逻辑影响后续启动

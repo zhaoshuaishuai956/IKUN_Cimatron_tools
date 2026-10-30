@@ -1,5 +1,10 @@
-﻿# NcNamer 自动命名插件 - 多版本一键安装脚本
+﻿# IKUN思美创工具箱 - Cimatron 二次开发插件 · 多版本一键安装脚本
 # 支持 Cimatron 2024 / 2025 / 2026（E11 见报告中的降级说明）
+#
+# 目录约定（新增插件时照此放置，安装脚本按 plugins\* 逐个处理）：
+#   plugins\<插件目录>\src\*.cs              插件源码（安装时按目标版本现场编译）
+#   plugins\<插件目录>\payload\common\*      通用二进制（如 NcPostRename.exe、图标）
+#   plugins\<插件目录>\payload\plugins\*     预编译 DLL（命名 prebuilt_<版本>_<名称>.dll）
 param(
     [switch]$Uninstall,
     [string]$OnlyVersion,
@@ -7,10 +12,12 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$PayloadRoot = Join-Path $PSScriptRoot 'payload'
-$SrcDir      = Join-Path $PayloadRoot 'src'
-$CommonDir   = Join-Path $PayloadRoot 'common'
-$PluginDir   = Join-Path $PayloadRoot 'plugins'
+$ToolboxName = 'IKUN思美创工具箱'
+$PluginsRoot = Join-Path $PSScriptRoot 'plugins'
+$PluginRoot  = Join-Path $PluginsRoot 'nc-rename'
+$SrcDir      = Join-Path $PluginRoot 'src'
+$CommonDir   = Join-Path $PluginRoot 'payload\common'
+$PluginDir   = Join-Path $PluginRoot 'payload\plugins'
 $PluginSrc   = Join-Path $SrcDir 'NcNamerAutoService.cs'
 $FlagSuffix  = if ($AutoLoadOff) { '0' } else { '1' }
 
@@ -195,11 +202,16 @@ function Register-Command($iniPath, $entry) {
     $kept = New-Object System.Collections.Generic.List[string]
     foreach ($l in $lines) {
         if ($l -match '^\s*NcNamer[^=]*=') { continue }
+        # ResetApiCommands=1 会让 Cimatron 在启动时把所有插件项改回 @0，
+        # 结果菜单永远不会被插入（AddApiDefaultMenu 只在 ResetMode==1 时执行）。
+        if ($l -match '^\s*ResetApiCommands\s*=') { $kept.Add('ResetApiCommands =0'); continue }
         $kept.Add($l)
     }
     $result = New-Object System.Collections.Generic.List[string]
     $inserted = $false
+    $hasGlobal = $false
     for ($i = 0; $i -lt $kept.Count; $i++) {
+        if ($kept[$i].Trim() -eq '[Global Flags]') { $hasGlobal = $true }
         $result.Add($kept[$i])
         if ($kept[$i].Trim() -eq '[Plugin Ext Commands]') {
             $result.Add($entry)
@@ -210,6 +222,11 @@ function Register-Command($iniPath, $entry) {
         $result.Add('')
         $result.Add('[Plugin Ext Commands]')
         $result.Add($entry)
+    }
+    if (-not $hasGlobal) {
+        $result.Insert(0, '')
+        $result.Insert(1, '[Global Flags]')
+        $result.Insert(2, 'ResetApiCommands =0')
     }
     [IO.File]::WriteAllLines($iniPath, $result, (New-Object System.Text.UTF8Encoding($false)))
     return $null
@@ -226,43 +243,49 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
 
     $text = [IO.File]::ReadAllText($layout, [Text.Encoding]::UTF8)
 
-    # 旧版本留下的菜单组名（改名后要让 Cimatron 重新生成）
-    $knownStaleNames = @('NcNamerAutoService')
+    # 历史遗留的菜单/工具栏组名：改名后要让 Cimatron 按新配置重建
+    $staleNames = @('NcNamerAutoService', 'IKUN tools')
 
-    $pattern = '<StreepGroupModel [^>]*Name="(Group -?\d+|NcNamerAutoService)"[^>]*>[\s\S]*?</StreepGroupModel>'
     $menuHit = [Regex]::Match($text, 'NcNamer[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
-    if (-not $menuHit.Success) {
-        $menuHit = [Regex]::Match($text, 'IKUN[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
-    }
+    if (-not $menuHit.Success) { $menuHit = [Regex]::Match($text, 'IKUN[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"') }
     if (-not $menuHit.Success) { return 0 }
     $cmdId = $menuHit.Groups[1].Value
 
-    $result = [Regex]::Replace($text, $pattern, {
+    # 1) 只含本插件命令的匿名工具栏组（旧版 ToolbarName 留空造成的重复按钮）
+    $grpPattern = '<StreepGroupModel [^>]*Name="(Group -?\d+)"[^>]*>[\s\S]*?</StreepGroupModel>'
+    $result = [Regex]::Replace($text, $grpPattern, {
         param($m)
-        $body = $m.Value
-        $simpleIds = @([Regex]::Matches($body, '<Id Type="Simple" Id="(\d+)"') |
+        $ids = @([Regex]::Matches($m.Value, '<Id Type="Simple" Id="(\d+)"') |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-        if ($simpleIds.Count -eq 1 -and $simpleIds[0] -eq $cmdId) {
-            $script:RemovedCount++
-            return ''
-        }
-        return $body
-    })
-
-    # 清掉旧名字的子菜单组，Cimatron 启动时会按新的 MenuPath 重建
-    $subPattern = '<StreepSubMenuGroupModel [^>]*Name="NcNamerAutoService"[^>]*>[\s\S]*?</StreepSubMenuGroupModel>'
-    $result2 = [Regex]::Replace($result, $subPattern, {
-        param($m)
-        if ($m.Value -match ('Type="Simple" Id="' + $cmdId + '"')) {
-            $script:RemovedCount++
-            return ''
-        }
+        if ($ids.Count -eq 1 -and $ids[0] -eq $cmdId) { $script:RemovedCount++; return '' }
         return $m.Value
     })
 
+    # 2) 旧名字的分组（改名后必须移除，否则菜单里会同时出现新旧两项）
+    foreach ($stale in $staleNames) {
+        $esc = [Regex]::Escape($stale)
+        $subPattern = '<StreepSubMenuGroupModel [^>]*Name="' + $esc + '"[^>]*>[\s\S]*?</StreepSubMenuGroupModel>'
+        $result = [Regex]::Replace($result, $subPattern, {
+            param($m)
+            if ($m.Value -match ('Type="Simple" Id="' + $cmdId + '"')) { $script:RemovedCount++; return '' }
+            return $m.Value
+        })
+    }
+
+    # 3) 旧名字的顶级菜单（例如曾经的「IKUN tools」菜单），空的整块删掉
+    foreach ($stale in $staleNames) {
+        $esc = [Regex]::Escape($stale)
+        $menuPattern = '<StreepSubMenuModel [^>]*Name="' + $esc + '"[^>]*>[\s\S]*?</StreepSubMenuModel>'
+        $result = [Regex]::Replace($result, $menuPattern, {
+            param($m)
+            if ($m.Value -match ('Type="Simple" Id="' + $cmdId + '"')) { $script:RemovedCount++; return '' }
+            return $m.Value
+        })
+    }
+
     if ($script:RemovedCount -gt 0) {
         $null = Backup-File $layout $backupRoot 'CommandsLayout'
-        [IO.File]::WriteAllText($layout, $result2, (New-Object System.Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($layout, $result, (New-Object System.Text.UTF8Encoding($false)))
         return $script:RemovedCount
     }
     return 0
@@ -271,7 +294,7 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
 # ---------- 3c. 投放命令图标 ----------
 # Cimatron 的图标机制：CreateCommand 时按命令 ID 在 DataDir\Images\Commands
 # 里找 {ID}_*.ico，找不到就用 99999_Missing.ico（黄底红叉占位图）。
-# 所以把图标复制成 {ID}_NcNamer.ico 即可，插件启动时也会自己再做一次。
+# 所以把图标复制成 {ID}_IKUNtools.ico 即可，插件启动时也会自己再做一次。
 function Get-ApiCommandId([string]$key) {
     $text = $key.ToLowerInvariant()
     $sum = 0
@@ -291,7 +314,7 @@ function Install-CommandIcon($inst, $backupRoot) {
     if (-not (Test-Path $imgDir)) { return ('图标目录不存在: ' + $imgDir) }
 
     $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
-    $dst = Join-Path $imgDir ($id + '_NcNamer.ico')
+    $dst = Join-Path $imgDir ($id + '_IKUNtools.ico')
     try {
         Copy-Item $src $dst -Force
         return $null
@@ -304,11 +327,14 @@ function Remove-CommandIcon($inst) {
     $imgDir = Join-Path $inst.DataDir 'Images\Commands'
     if (-not (Test-Path $imgDir)) { return 0 }
     $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
-    $dst = Join-Path $imgDir ($id + '_NcNamer.ico')
-    if (Test-Path $dst) {
-        try { Remove-Item $dst -Force; return 1 } catch { }
+    $removed = 0
+    foreach ($suffix in @('_IKUNtools.ico', '_NcNamer.ico')) {
+        $dst = Join-Path $imgDir ($id + $suffix)
+        if (Test-Path $dst) {
+            try { Remove-Item $dst -Force; $removed++ } catch { }
+        }
     }
-    return 0
+    return $removed
 }
 
 # ---------- 4. 注入 BJ.EXF 的 NCMETA 行 ----------
@@ -489,7 +515,7 @@ foreach ($inst in $installs) {
     $iconErr = Install-CommandIcon $inst $backupRoot
     $iconId = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
     if ($iconErr) { Say ("  图标安装失败: " + $iconErr) 'Yellow' }
-    else { Say ("  图标已安装: " + $iconId + "_NcNamer.ico") 'Green' }
+    else { Say ("  图标已安装: " + $iconId + "_IKUNtools.ico") 'Green' }
 
     # 6c. 后处理目录
     foreach ($pd in $inst.PostDirs) {
