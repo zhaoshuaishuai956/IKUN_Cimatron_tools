@@ -32,7 +32,7 @@ Cimatron BJ 后处理完成后，自动把 NC 程序重命名为：
 3. 页面往下找一个叫 **Assets**（资源）的小区域，里面有一行：
 
    ```
-   NcNamer_Setup_v2_nc.bj.zip      562 KB
+   NcNamer_Setup_v2.4_IKUNtools.zip      562 KB
    ```
 
 4. 点这一行，浏览器就开始下载。下载完成后，文件通常在「下载」文件夹里。
@@ -43,7 +43,7 @@ Cimatron BJ 后处理完成后，自动把 NC 程序重命名为：
 
 ### 第 2 步：解压
 
-1. 找到下载好的 `NcNamer_Setup_v2_nc.bj.zip`。
+1. 找到下载好的 `NcNamer_Setup_v2.4_IKUNtools.zip`。
 2. **右键 → 全部解压缩**（Windows 11 可能显示为「全部提取」）。
 3. 选择一个容易找到的位置，例如 `D:\NcNamer_Setup`，然后点「提取」。
 
@@ -199,9 +199,11 @@ BJ 后处理
 - **图标**：Cimatron 的图标是按命令 ID 从 `DataDir\Images\Commands\` 取的
   （`GetIconById` 扫描该目录，取文件名第一个 `_` 之前的数字），找不到就用
   `99999_Missing.ico` —— 黄底红叉占位图。因此插件启动时会把 `NcNamer_icon64.ico`
-  复制成 `{命令ID}_NcNamer.ico`（本插件为 `50468_NcNamer.ico`）。
+  复制成 `{命令ID}_IKUNtools.ico`（本插件为 `50468_IKUNtools.ico`）。
   `ApiCommand.IconSource` 那条 overlay 分支要求 ico 与同名 png 同目录且目录可写，
   在 Program Files 下会静默失败，已弃用。
+- **首次加载提示**：插件在本版本首次启动时弹出「IKUN 已加载」提示窗（6 秒自动关闭），
+  通过在 `%USERPROFILE%\NcNamer\ikun_loaded_v<版本>.flag` 写标记保证只弹一次。
 - 启动即拉起 `NcAutoExportService`，用 `FileSystemWatcher` 监听 `%USERPROFILE%\NcNamer\export_request_*.txt`。
 - 校验发起方 PID：请求文件里记录了发起实例的 PID，只有被指定的实例才继续处理。
 - 收到请求后切回 UI 线程，先看活动文档，再用 `IApplication.GetPdm().GetOpenDocuments()`
@@ -284,7 +286,7 @@ NcNamerRepo/
 │     ├─ NcNamerAutoService.cs  后台插件源码
 │     └─ NcPostRenameAuto.cs    命名器源码
 └─ dist/
-   └─ NcNamer_Setup_v2.1_nc.bj.zip   最终多版本一键安装包
+   └─ NcNamer_Setup_v2.4_IKUNtools.zip   最终多版本一键安装包
 ```
 
 ## 从源码构建
@@ -346,7 +348,8 @@ $refs = @(
 
 ## 版本说明
 
-- **v2.3（当前）**：修复命令图标始终显示黄底红叉。Cimatron 按命令 ID 在 `DataDir\Images\Commands\` 里查找 `{ID}_*.ico`，找不到就退回 `99999_Missing.ico`（占位图）。现在安装时和插件启动时都会把图标投放为 `50468_NcNamer.ico`。
+- **v2.4（当前）**：更名为 **IKUN tools**（菜单 `NC → IKUN tools`）；图标换成自定义 IKUN 形象（16/24/32/48/64/128/256 七种尺寸）；首次加载弹出「IKUN 已加载」提示。
+- **v2.3**：修复命令图标始终显示黄底红叉。Cimatron 按命令 ID 在 `DataDir\Images\Commands\` 里查找 `{ID}_*.ico`，找不到就退回 `99999_Missing.ico`（占位图）。
 - **v2.2**：修复「每次启动工具栏按钮多一个」——`ToolbarName` 留空导致 Cimatron 反复新建匿名分组；安装时自动清理历史堆积的按钮。
 - **v2.1.2**：修复请求文件被重命名导致插件收不到请求的问题（`FileSystemWatcher` 只报 `Renamed`）；广播模式下多实例数据冲突时拒绝命名。
 - **v2.1.1**：请求文件改为原子写入（此改动引入了 v2.1.2 修复的回归，请勿使用）。
@@ -360,13 +363,13 @@ $refs = @(
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest |
-| 版本 v2.2 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.2 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.2/NcNamer_Setup_v2.2_nc.bj.zip |
+| 版本 v2.4 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.4 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.4/NcNamer_Setup_v2.4_IKUNtools.zip |
 
 下载后可在 PowerShell 中校验（SHA256 值见 Releases 页面说明）：
 
 ```powershell
-Get-FileHash .\NcNamer_Setup_v2.1_nc.bj.zip -Algorithm SHA256
+Get-FileHash .\NcNamer_Setup_v2.4_IKUNtools.zip -Algorithm SHA256
 ```
 
-仓库内也留有一份同内容的副本：[`dist/NcNamer_Setup_v2.1_nc.bj.zip`](dist/NcNamer_Setup_v2.1_nc.bj.zip)，解压后即为安装器目录。
+仓库内也留有一份同内容的副本：[`dist/NcNamer_Setup_v2.4_IKUNtools.zip`](dist/NcNamer_Setup_v2.4_IKUNtools.zip)，解压后即为安装器目录。

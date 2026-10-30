@@ -22,11 +22,11 @@ namespace NcNamerAutoService
                 Name = "NcNamerAutoService2024",
                 // 必须给固定名字。留空时 Cimatron 每次启动都会新建一个匿名工具栏组
                 // （CommandsLayout.xml 里的 Group -1xxxxxxxxx），按钮数量随启动次数增长。
-                ToolbarName = "NcNamer",
-                MenuPath = "NC\nNcNamerAutoService",
-                Caption = "NcNamer Auto Service",
-                ToolTip = "Automatic NC naming support service",
-                Description = "Background service used automatically by BJ post-processing",
+                ToolbarName = "IKUN tools",
+                MenuPath = "NC\nIKUN tools",
+                Caption = "IKUN tools",
+                ToolTip = "自动 NC 命名服务（BJ 后处理后自动重命名）",
+                Description = "IKUN 已加载 - 后处理完成后自动把 NC 程序命名为 序号-刀名-刀长 nc.bj",
                 Application = ApiApplications.Nc | ApiApplications.NcPart,
                 ExecuteCommand = new NcAutoServiceCommand(),
                 IconSize = ApiIconSize.Large,
@@ -88,6 +88,92 @@ namespace NcNamerAutoService
 
         private static bool _nativeIconDone;
 
+        // 每个版本只在第一次成功加载时提示一次，之后不再打扰
+        private static void ShowFirstRunNotice()
+        {
+            try
+            {
+                string dir = NcNamerDir();
+                Directory.CreateDirectory(dir);
+                string marker = Path.Combine(dir, "ikun_loaded_v2.4.flag");
+                if (File.Exists(marker)) return;
+
+                File.WriteAllText(marker, DateTime.Now.ToString("o"), new UTF8Encoding(false));
+                AppendLog("IKUN tools loaded - showing first-run notice");
+
+                // 用独立线程弹非模态窗体，绝不阻塞 Cimatron 启动
+                Thread t = new Thread(delegate ()
+                {
+                    try
+                    {
+                        var form = new System.Windows.Forms.Form();
+                        form.Text = "IKUN tools";
+                        form.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+                        form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+                        form.MaximizeBox = false;
+                        form.MinimizeBox = false;
+                        form.TopMost = true;
+                        form.ClientSize = new System.Drawing.Size(360, 150);
+                        form.BackColor = System.Drawing.Color.White;
+
+                        var title = new System.Windows.Forms.Label();
+                        title.Text = "IKUN 已加载";
+                        title.Font = new System.Drawing.Font("Microsoft YaHei", 16F, System.Drawing.FontStyle.Bold);
+                        title.ForeColor = System.Drawing.Color.FromArgb(31, 78, 121);
+                        title.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+                        title.SetBounds(10, 22, 340, 40);
+                        form.Controls.Add(title);
+
+                        var sub = new System.Windows.Forms.Label();
+                        sub.Text = "NC 后处理完成后会自动重命名程序" + Environment.NewLine + "菜单位置：NC → IKUN tools";
+                        sub.Font = new System.Drawing.Font("Microsoft YaHei", 9F);
+                        sub.ForeColor = System.Drawing.Color.DimGray;
+                        sub.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+                        sub.SetBounds(10, 64, 340, 44);
+                        form.Controls.Add(sub);
+
+                        var ok = new System.Windows.Forms.Button();
+                        ok.Text = "知道了";
+                        ok.SetBounds(140, 110, 80, 28);
+                        ok.Click += delegate { form.Close(); };
+                        form.Controls.Add(ok);
+                        form.AcceptButton = ok;
+
+                        // 图标用主窗体的
+                        try
+                        {
+                            string ico = Path.Combine(
+                                Path.GetDirectoryName(typeof(NcDumpPlugin).Assembly.Location) ?? "",
+                                "NcNamer_icon64.ico");
+                            if (File.Exists(ico)) form.Icon = new System.Drawing.Icon(ico);
+                        }
+                        catch { }
+
+                        form.Shown += delegate
+                        {
+                            var timer = new System.Windows.Forms.Timer();
+                            timer.Interval = 6000;
+                            timer.Tick += delegate { timer.Stop(); try { form.Close(); } catch { } };
+                            timer.Start();
+                        };
+
+                        System.Windows.Forms.Application.Run(form);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog("Notice failed: " + ex.Message);
+                    }
+                });
+                t.IsBackground = true;
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Notice skipped: " + ex.Message);
+            }
+        }
+
         // 把图标投放到 Cimatron 期望的 DataDir\Images\Commands\{命令ID}_*.ico
         internal static void EnsureNativeIcon()
         {
@@ -100,12 +186,17 @@ namespace NcNamerAutoService
                 string sourceIco = Path.Combine(programDir, "NcNamer_icon64.ico");
                 if (!File.Exists(sourceIco))
                 {
+                    string altIco = Path.Combine(programDir, "IKUNtools.ico");
+                    if (File.Exists(altIco)) sourceIco = altIco;
+                }
+                if (!File.Exists(sourceIco))
+                {
                     AppendLog("Icon: source missing " + sourceIco);
                     return;
                 }
 
                 int commandId = CalculateApiCommandId(typeof(NcDumpPlugin).FullName);
-                string fileName = commandId + "_NcNamer.ico";
+                string fileName = commandId + "_IKUNtools.ico";
 
                 foreach (string dir in CandidateCommandImageDirs(programDir))
                 {
@@ -216,8 +307,11 @@ namespace NcNamerAutoService
                 // 订阅它以免漏掉请求。
                 _watcher.Renamed += OnRenamed;
                 _watcher.EnableRaisingEvents = true;
-                AppendLog("NcNamer auto service started (pid=" + _myPid + ")");
+                AppendLog("IKUN tools started (pid=" + _myPid + ")");
             }
+
+            // 放在锁外，避免弹窗逻辑影响后续启动
+            try { ShowFirstRunNotice(); } catch { }
         }
 
         private static void OnRenamed(object sender, RenamedEventArgs e)

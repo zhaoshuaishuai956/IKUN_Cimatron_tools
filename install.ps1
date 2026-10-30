@@ -225,11 +225,18 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
     if (-not (Test-Path $layout)) { return 0 }
 
     $text = [IO.File]::ReadAllText($layout, [Text.Encoding]::UTF8)
+
+    # 旧版本留下的菜单组名（改名后要让 Cimatron 重新生成）
+    $knownStaleNames = @('NcNamerAutoService')
+
+    $pattern = '<StreepGroupModel [^>]*Name="(Group -?\d+|NcNamerAutoService)"[^>]*>[\s\S]*?</StreepGroupModel>'
     $menuHit = [Regex]::Match($text, 'NcNamer[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
+    if (-not $menuHit.Success) {
+        $menuHit = [Regex]::Match($text, 'IKUN[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
+    }
     if (-not $menuHit.Success) { return 0 }
     $cmdId = $menuHit.Groups[1].Value
 
-    $pattern = '<StreepGroupModel [^>]*Name="(Group -?\d+)"[^>]*>[\s\S]*?</StreepGroupModel>'
     $result = [Regex]::Replace($text, $pattern, {
         param($m)
         $body = $m.Value
@@ -242,9 +249,20 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
         return $body
     })
 
+    # 清掉旧名字的子菜单组，Cimatron 启动时会按新的 MenuPath 重建
+    $subPattern = '<StreepSubMenuGroupModel [^>]*Name="NcNamerAutoService"[^>]*>[\s\S]*?</StreepSubMenuGroupModel>'
+    $result2 = [Regex]::Replace($result, $subPattern, {
+        param($m)
+        if ($m.Value -match ('Type="Simple" Id="' + $cmdId + '"')) {
+            $script:RemovedCount++
+            return ''
+        }
+        return $m.Value
+    })
+
     if ($script:RemovedCount -gt 0) {
         $null = Backup-File $layout $backupRoot 'CommandsLayout'
-        [IO.File]::WriteAllText($layout, $result, (New-Object System.Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($layout, $result2, (New-Object System.Text.UTF8Encoding($false)))
         return $script:RemovedCount
     }
     return 0
