@@ -58,6 +58,25 @@ class NcPostRename
     [STAThread]
     static int Main(string[] args)
     {
+        // 钩子脚本先用 /ownerpid 探测发起本次后处理的 Cimatron 实例，再把结果用 /owner=<pid>
+        // 传给真正的命名进程。这样即使 start /min 让 cmd 立即退出、父进程链断开，
+        // 多开时也能确定唯一应答实例。
+        if (args != null && args.Length > 0 &&
+            string.Equals(args[0], "/ownerpid", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine(ProbeOwnerPid());
+            return 0;
+        }
+
+        foreach (string arg in args ?? new string[0])
+        {
+            if (arg != null && arg.StartsWith("/owner=", StringComparison.OrdinalIgnoreCase))
+            {
+                int parsed;
+                if (int.TryParse(arg.Substring("/owner=".Length), out parsed) && parsed > 0) OwnerPid = parsed;
+            }
+        }
+
         string cwd = Directory.GetCurrentDirectory();
         string outputDir = cwd;
         string leaf = Path.GetFileName(cwd.TrimEnd('\\'));
@@ -71,8 +90,8 @@ class NcPostRename
         Log(runLog, "CWD=" + cwd);
         Log(runLog, "OutputDir=" + outputDir);
 
-        // 多开场景：本进程由 Cimatron 的后处理钩子拉起，沿父进程链可定位实际发起者。
-        OwnerPid = FindOwnerCimatronPid(runLog);
+        // 多开场景：优先用钩子脚本传来的 PID；没有时才自行沿父进程链探测。
+        if (OwnerPid == 0) OwnerPid = FindOwnerCimatronPid(runLog);
         Log(runLog, "OwnerCimatronPid=" + OwnerPid);
 
         using (var mutex = new Mutex(false, "NcPostRenameMutex"))
@@ -182,6 +201,19 @@ class NcPostRename
         public string Tool;
         public string Length;
         public string XmlPath;
+    }
+
+    // /ownerpid 模式：只输出探测结果，不写日志、不做事。
+    static int ProbeOwnerPid()
+    {
+        try
+        {
+            return FindOwnerCimatronPid(new StringBuilder());
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     // 沿父进程链向上找到发起本次后处理的 CimatronE.exe。
@@ -354,89 +386,74 @@ class NcPostRename
         string dir = NcNamerDir();
         string token = Guid.NewGuid().ToString("N");
         string requestPath = Path.Combine(dir, "export_request_" + token + "_" + procId + ".txt");
-        string responsePath = Path.Combine(dir, "export_response_" + token + ".txt");
+        // 响应文件按实例 PID 分文件，多开时互相不再覆盖
+        string responseGlob = "export_response_" + token + "*.txt";
         DateTime requestStartedUtc = DateTime.UtcNow;
+        // 指定了发起实例时无需等待其他人；广播模式下要留出重叠窗口，避免先到的错误结果被采用
+        int settleMs = OwnerPid > 0 ? 0 : 1500;
         try
         {
             Directory.CreateDirectory(dir);
-            if (File.Exists(responsePath)) File.Delete(responsePath);
             // 记录发起方所在 Cimatron 实例的 PID；插件据此决定是否由自己应答，
             // 多开时其它实例保持静默，避免抢答或覆盖正确结果。
-            // 先写临时文件再原子改名，保证插件看到请求时内容已经完整。
-            string stagedPath = requestPath + ".staged";
+            // 注意：必须直接写入目标文件名。若先写临时文件再改名，
+            // FileSystemWatcher 触发的是 Renamed 而非 Created，插件会收不到请求。
+            // 插件侧对"读到空内容"已有重试，因此直接写入是安全的。
             try { if (File.Exists(requestPath)) File.Delete(requestPath); } catch { }
-            File.WriteAllText(stagedPath, "owner=" + OwnerPid + Environment.NewLine, new UTF8Encoding(true));
-            File.Move(stagedPath, requestPath);
+            File.WriteAllText(requestPath, "owner=" + OwnerPid + Environment.NewLine, new UTF8Encoding(true));
             Log(log, "FreshXmlRequest=" + requestPath + " ownerPid=" + OwnerPid);
 
             DateTime deadline = DateTime.Now.AddSeconds(FreshXmlTimeoutSeconds);
+            DateTime? firstOkAt = null;
+            // 成功响应按内容哈希去重：哈希 -> XML 路径
+            var okCandidates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
             while (DateTime.Now < deadline)
             {
-                if (File.Exists(responsePath))
+                CollectResponses(dir, responseGlob, procId, requestStartedUtc, okCandidates, log, ref lastError, ref errAt);
+
+                if (okCandidates.Count > 1 && settleMs == 0)
                 {
-                    string response;
-                    try { response = File.ReadAllText(responsePath, Encoding.UTF8); }
-                    catch (IOException) { Thread.Sleep(25); continue; }
+                    error = "Conflicting XML from " + okCandidates.Count + " documents for procedure " + procId
+                        + " (owner instance pid " + OwnerPid + "). Keeping original name.";
+                    return false;
+                }
 
-                    if (response.StartsWith("ERR|", StringComparison.OrdinalIgnoreCase))
+                if (okCandidates.Count == 1)
+                {
+                    if (!firstOkAt.HasValue) firstOkAt = DateTime.Now;
+                    if ((DateTime.Now - firstOkAt.Value).TotalMilliseconds >= settleMs)
                     {
-                        // 可能同时开着多个 Cimatron 实例：非活动实例会报 ERR，活动实例稍后写 OKXML。
-                        // 这里不立即放弃，记下原因继续等成功响应，直到超时。
-                        lastError = response.Substring(4);
-                        if (!errAt.HasValue) errAt = DateTime.Now;
-                        Log(log, "Plugin reported error (waiting for another instance): " + lastError);
-                        // 只给 20 秒窗口等其他实例/重试的成功响应，超过则放弃，避免长时间空等
-                        if ((DateTime.Now - errAt.Value).TotalSeconds > 20)
-                        {
-                            error = lastError;
-                            return false;
-                        }
-                        Thread.Sleep(50);
-                        continue;
+                        string path = null;
+                        string hash = null;
+                        foreach (var pair in okCandidates) { hash = pair.Key; path = pair.Value; }
+                        xmlPath = path;
+                        Log(log, "FreshXmlReady=" + path + "; WriteTimeUtc=" + File.GetLastWriteTimeUtc(path).ToString("o") + "; Sha256=" + hash);
+                        return true;
                     }
-                    if (!response.StartsWith("OKXML|", StringComparison.OrdinalIgnoreCase))
-                    {
-                        Thread.Sleep(25);
-                        continue;
-                    }
+                }
+                else if (okCandidates.Count > 1)
+                {
+                    // 广播模式下多个实例都返回了不同内容：无法判定哪个属于本次后处理，宁可放弃
+                    string hashes = string.Join(", ", new List<string>(okCandidates.Keys).ToArray());
+                    error = "Conflicting XML from " + okCandidates.Count + " Cimatron instances for procedure " + procId
+                        + " (" + hashes + "). Keeping original name; pass /owner=<pid> to disambiguate.";
+                    return false;
+                }
 
-                    string[] parts = response.Split('|');
-                    if (parts.Length < 4 || parts.Skip(1).Any(string.IsNullOrWhiteSpace))
-                    {
-                        Thread.Sleep(25);
-                        continue;
-                    }
-
-                    string candidatePath = Decode64(parts[1]);
-                    string responseProcId = Decode64(parts[2]);
-                    string expectedHash = Decode64(parts[3]);
-                    if (!string.Equals(responseProcId, procId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        error = "Response procedure id mismatch: expected " + procId + ", got " + responseProcId;
-                        return false;
-                    }
-                    if (string.IsNullOrWhiteSpace(candidatePath) || !File.Exists(candidatePath))
-                    {
-                        error = "Response XML file missing";
-                        return false;
-                    }
-                    if (File.GetLastWriteTimeUtc(candidatePath) < requestStartedUtc.AddSeconds(-2))
-                    {
-                        error = "Response XML timestamp is older than this request";
-                        return false;
-                    }
-                    string actualHash = Sha256File(candidatePath);
-                    if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Thread.Sleep(25);
-                        continue;
-                    }
-
-                    xmlPath = candidatePath;
-                    Log(log, "FreshXmlReady=" + xmlPath + "; WriteTimeUtc=" + File.GetLastWriteTimeUtc(candidatePath).ToString("o") + "; Sha256=" + actualHash);
-                    return true;
+                if (okCandidates.Count == 0 && errAt.HasValue &&
+                    (DateTime.Now - errAt.Value).TotalSeconds > 20)
+                {
+                    error = lastError;
+                    return false;
                 }
                 Thread.Sleep(25);
+            }
+
+            if (okCandidates.Count == 1)
+            {
+                foreach (var pair in okCandidates) { xmlPath = pair.Value; break; }
+                return true;
             }
             error = string.IsNullOrEmpty(lastError)
                 ? (OwnerPid > 0
@@ -452,8 +469,70 @@ class NcPostRename
         }
         finally
         {
-            try { if (File.Exists(responsePath)) File.Delete(responsePath); } catch { }
+            try
+            {
+                foreach (string f in Directory.GetFiles(dir, responseGlob))
+                {
+                    try { File.Delete(f); } catch { }
+                }
+            }
+            catch { }
             try { if (File.Exists(requestPath)) File.Delete(requestPath); } catch { }
+        }
+    }
+
+    // 扫描本令牌的所有响应文件，验证后按内容哈希收集
+    static void CollectResponses(string dir, string responseGlob, string procId, DateTime requestStartedUtc,
+        Dictionary<string, string> okCandidates, StringBuilder log, ref string lastError, ref DateTime? errAt)
+    {
+        string[] files;
+        try { files = Directory.GetFiles(dir, responseGlob); }
+        catch { return; }
+
+        foreach (string file in files)
+        {
+            string response;
+            try { response = File.ReadAllText(file, Encoding.UTF8); }
+            catch (IOException) { continue; }
+
+            if (response.StartsWith("ERR|", StringComparison.OrdinalIgnoreCase))
+            {
+                lastError = response.Substring(4);
+                if (!errAt.HasValue) errAt = DateTime.Now;
+                continue;
+            }
+            if (!response.StartsWith("OKXML|", StringComparison.OrdinalIgnoreCase)) continue;
+
+            string[] parts = response.Split('|');
+            if (parts.Length < 4 || parts.Skip(1).Any(string.IsNullOrWhiteSpace)) continue;
+
+            string candidatePath = Decode64(parts[1]);
+            string responseProcId = Decode64(parts[2]);
+            string expectedHash = Decode64(parts[3]);
+
+            if (!string.Equals(responseProcId, procId, StringComparison.OrdinalIgnoreCase))
+            {
+                Log(log, "Response ignored (" + Path.GetFileName(file) + "): procedure id " + responseProcId + " != " + procId);
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(candidatePath) || !File.Exists(candidatePath)) continue;
+            if (File.GetLastWriteTimeUtc(candidatePath) < requestStartedUtc.AddSeconds(-2))
+            {
+                Log(log, "Response ignored (" + Path.GetFileName(file) + "): XML older than request");
+                continue;
+            }
+
+            string actualHash;
+            try { actualHash = Sha256File(candidatePath); }
+            catch (IOException) { continue; }
+
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                Log(log, "Response ignored (" + Path.GetFileName(file) + "): sha256 mismatch");
+                continue;
+            }
+
+            okCandidates[actualHash] = candidatePath;
         }
     }
 

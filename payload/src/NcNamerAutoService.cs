@@ -80,9 +80,20 @@ namespace NcNamerAutoService
                 _watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime;
                 _watcher.Created += OnRequest;
                 _watcher.Changed += OnRequest;
+                // 有些写入方式（先写临时文件再改名）只会产生 Renamed 事件，
+                // 订阅它以免漏掉请求。
+                _watcher.Renamed += OnRenamed;
                 _watcher.EnableRaisingEvents = true;
                 AppendLog("NcNamer auto service started (pid=" + _myPid + ")");
             }
+        }
+
+        private static void OnRenamed(object sender, RenamedEventArgs e)
+        {
+            // 只处理"改成请求文件名"的情况，忽略改走的事件
+            if (e.Name == null || !e.Name.StartsWith(RequestPrefix, StringComparison.OrdinalIgnoreCase)) return;
+            if (!e.Name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) return;
+            OnRequest(sender, new FileSystemEventArgs(WatcherChangeTypes.Created, Path.GetDirectoryName(e.FullPath), e.Name));
         }
 
         private static void OnRequest(object sender, FileSystemEventArgs e)
@@ -155,12 +166,13 @@ namespace NcNamerAutoService
 
         private static void AttemptExport(string requestPath, string token, int procUid, int ownerPid, int attempt)
         {
-            string responsePath = Path.Combine(NcNamerDir(), "export_response_" + token + ".txt");
+            // 文件名带实例 PID：多开时即使两个实例都应答，也不会互相覆盖
+            string responsePath = Path.Combine(NcNamerDir(), "export_response_" + token + "_" + _myPid + ".txt");
             try
             {
                 if (procUid <= 0) throw new InvalidOperationException("Missing procedure id");
 
-                string xmlPath = Path.Combine(NcNamerDir(), "nc_item_" + token + "_" + procUid + ".xml");
+                string xmlPath = Path.Combine(NcNamerDir(), "nc_item_" + token + "_" + _myPid + "_" + procUid + ".xml");
                 string error;
                 if (TryExportFromAnyDocument(procUid, xmlPath, out error))
                 {

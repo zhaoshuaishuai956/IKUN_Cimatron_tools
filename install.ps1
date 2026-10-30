@@ -249,19 +249,37 @@ function Compile-Dex($inst, $postDir) {
 }
 
 # ---------- 6. 写 BJ 钩子 ----------
+# 钩子先用 /ownerpid 探测发起后处理的 Cimatron 实例，再把 PID 传给命名进程。
+# 多开时只有该实例会应答取数请求，避免取到另一个窗口的数据。
+function Get-HookLine {
+    return 'for /f "delims=" %%i in (''"%~dp0NcPostRename.exe" /ownerpid'') do start "" /min "%~dp0NcPostRename.exe" /owner=%%i'
+}
+
 function Write-Hook($postDir, $hookName, $backupRoot) {
     $target = Join-Path $postDir $hookName
     $marker = 'NcPostRename.exe'
-    if (Test-Path $target) {
-        $old = [IO.File]::ReadAllText($target, [Text.Encoding]::Default)
-        if ($old -match [Regex]::Escape($marker)) { return 'already' }
-        $null = Backup-File $target $backupRoot ("hook_" + $hookName)
-        $body = $old
-    } else {
-        $body = "@echo off`r`n"
+    $hookLine = Get-HookLine
+    $text = ''
+    $exists = Test-Path $target
+    if ($exists) {
+        $text = [IO.File]::ReadAllText($target, [Text.Encoding]::Default)
+        if ($text -match [Regex]::Escape($hookLine)) { return 'already' }
     }
-    if ($body -notmatch '(?im)^\s*@echo\s+off') { $body = "@echo off`r`n" + $body }
-    $body = $body.TrimEnd() + "`r`n" + 'start "" /min "%~dp0NcPostRename.exe"' + "`r`n"
+
+    # 去掉历史版本留下的 NcPostRename 行（含旧式 start "");
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($exists) {
+        foreach ($l in ($text -split "`r?`n")) {
+            if ($l -match [Regex]::Escape($marker)) { continue }
+            if ($l.Trim() -eq '') { continue }
+            $lines.Add($l)
+        }
+        if ($lines.Count -gt 0) { $null = Backup-File $target $backupRoot ("hook_" + $hookName) }
+    }
+    if ($lines.Count -eq 0) { $lines.Add('@echo off') }
+    if (-not ($lines[0] -match '(?i)^\s*@echo\s+off')) { $lines.Insert(0, '@echo off') }
+
+    $body = ($lines -join "`r`n").TrimEnd() + "`r`n" + $hookLine + "`r`n"
     [IO.File]::WriteAllText($target, $body, (New-Object System.Text.UTF8Encoding($false)))
     return $null
 }

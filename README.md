@@ -209,14 +209,19 @@ BJ 后处理
 返回错误的刀长"，流程按实例隔离：
 
 1. 命名器从 `NcPostRename.exe` 沿父进程链向上，找到拉起它的 `CimatronE.exe`。
+   钩子脚本会先用 `NcPostRename.exe /ownerpid` 同步探测，再以 `/owner=<pid>` 拉起命名进程；
    整条链会写进 `post_rename_log.txt` 的 `ProcessChain=...` 一行，便于排查。
 2. 该实例的 PID 写入请求文件（`owner=<pid>`）。
 3. 各实例收到请求后比对 PID：只有一个匹配，其余实例保持静默，不再写响应文件。
 4. 匹配的实例在自己的所有打开文档里查找该程序编号，因此后处理时切到别的文档也不会取错值。
 
+> 实现注意：请求文件必须**直接创建**为最终文件名。若先写临时文件再改名，
+> `FileSystemWatcher` 触发的是 `Renamed` 事件而非 `Created`，插件会收不到请求。
+
 无法确定发起实例时（例如手工双击运行 `NcPostRename.exe`，或后处理经由非子进程执行），
-会退回**广播模式**：所有实例都可应答；取不到数据的实例会延迟 8 秒才写失败结果，
-且不会覆盖已经写入的成功结果。日志里会记录 `Ambiguous: N Cimatron instances running; using broadcast mode`。
+会退回**广播模式**：所有实例都可应答。此时如果多个实例返回了**内容不同**的 XML，
+命名器不会猜，而是放弃命名并保留原名，同时写出 `NC_RENAME_FAILED.txt` 说明原因
+（日志里记为 `Ambiguous: N Cimatron instances running; using broadcast mode`）。
 
 ### 3. 命名器 `payload/src/NcPostRenameAuto.cs`
 
@@ -332,7 +337,8 @@ $refs = @(
 
 ## 版本说明
 
-- **v2.1.1（当前）**：修正请求文件的写入竞态——先写临时文件再原子改名，避免插件读到空文件而误判为广播请求。
+- **v2.1.2（当前）**：修复请求文件被重命名导致插件收不到请求的问题（`FileSystemWatcher` 只报 `Renamed`）；广播模式下多实例数据冲突时拒绝命名。
+- **v2.1.1**：请求文件改为原子写入（此改动引入了 v2.1.2 修复的回归，请勿使用）。
 - **v2.1**：多实例支持——只由实际执行后处理的 Cimatron 实例应答，并在该实例的所有打开文档里查找程序；`非空闲` 自动等待重试；新增 2026 预编译插件。
 - **v2**：文件名末尾为 `空格 + nc + .bj`（`01-D10-72 nc.bj`）；无最小伸出要求时刀长段记 `NA`。
 - **v1**：文件名末尾为 `空格 + nc`（无扩展名），已不再发布。
@@ -343,8 +349,8 @@ $refs = @(
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest |
-| 版本 v2.1.1 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.1 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.1/NcNamer_Setup_v2.1_nc.bj.zip |
+| 版本 v2.1.2 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.2 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.2/NcNamer_Setup_v2.1_nc.bj.zip |
 
 下载后可在 PowerShell 中校验（SHA256 值见 Releases 页面说明）：
 
