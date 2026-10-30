@@ -1,0 +1,18 @@
+# 运行时日志与临时文件
+*.log
+*.tmp
+*.bak
+*.backup_*
+NC_RENAME_FAILED.txt
+export_request_*.txt
+export_response_*.txt
+nc_item_*.xml
+
+# 编译中间产物
+bin/
+obj/
+.vs/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
