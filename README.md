@@ -193,6 +193,12 @@ BJ 后处理
 ### 2. 后台插件 `payload/src/NcNamerAutoService.cs`
 
 - 实现 `ICimApiCommandPlugin`，随 Cimatron 启动加载。
+- **命令注册**：`ToolbarName` 必须是固定名字。留空时 Cimatron 每次启动都会新建一个匿名
+  工具栏分组写进 `CommandsLayout.xml`，表现为「每启动一次就多一个按钮」，且这些匿名组
+  没有图标，只能显示黄底红叉的占位图。
+- **图标**：`IconSource` 使用 `IconIdentifier(dll路径, 32512, Large)`，图标在编译时以
+  Win32 资源形式嵌入插件 DLL（`/win32icon`）。早先尝试过的外部 png / `WpfImageIdentifier`
+  方案在 Cimatron 的渲染链路上取不到图，已放弃。
 - 启动即拉起 `NcAutoExportService`，用 `FileSystemWatcher` 监听 `%USERPROFILE%\NcNamer\export_request_*.txt`。
 - 校验发起方 PID：请求文件里记录了发起实例的 PID，只有被指定的实例才继续处理。
 - 收到请求后切回 UI 线程，先看活动文档，再用 `IApplication.GetPdm().GetOpenDocuments()`
@@ -337,7 +343,8 @@ $refs = @(
 
 ## 版本说明
 
-- **v2.1.2（当前）**：修复请求文件被重命名导致插件收不到请求的问题（`FileSystemWatcher` 只报 `Renamed`）；广播模式下多实例数据冲突时拒绝命名。
+- **v2.2（当前）**：修复「每次启动工具栏按钮多一个」——`ToolbarName` 留空导致 Cimatron 反复新建匿名分组；图标改为嵌入 DLL 的 Win32 资源，安装时自动清理历史堆积的按钮。
+- **v2.1.2**：修复请求文件被重命名导致插件收不到请求的问题（`FileSystemWatcher` 只报 `Renamed`）；广播模式下多实例数据冲突时拒绝命名。
 - **v2.1.1**：请求文件改为原子写入（此改动引入了 v2.1.2 修复的回归，请勿使用）。
 - **v2.1**：多实例支持——只由实际执行后处理的 Cimatron 实例应答，并在该实例的所有打开文档里查找程序；`非空闲` 自动等待重试；新增 2026 预编译插件。
 - **v2**：文件名末尾为 `空格 + nc + .bj`（`01-D10-72 nc.bj`）；无最小伸出要求时刀长段记 `NA`。
@@ -349,8 +356,8 @@ $refs = @(
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest |
-| 版本 v2.1.2 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.2 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.2/NcNamer_Setup_v2.1_nc.bj.zip |
+| 版本 v2.2 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.2 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.2/NcNamer_Setup_v2.2_nc.bj.zip |
 
 下载后可在 PowerShell 中校验（SHA256 值见 Releases 页面说明）：
 

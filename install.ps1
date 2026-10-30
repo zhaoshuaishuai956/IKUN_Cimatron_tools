@@ -149,7 +149,11 @@ function Build-Plugin($inst, $outDll) {
     }
 
     $tmpOut = Join-Path $env:TEMP ('NcNamerAutoService_' + [Guid]::NewGuid().ToString('N') + '.dll')
-    $out = & $csc /nologo /target:library /platform:x64 /out:$tmpOut $refs $PluginSrc 2>&1 | Out-String
+    # 图标以 Win32 资源嵌入 DLL，Cimatron 才能通过 LoadIcon 取到
+    $iconArg = @()
+    $icoPath = Join-Path $CommonDir 'NcNamer_icon64.ico'
+    if (Test-Path $icoPath) { $iconArg = @('/win32icon:' + $icoPath) }
+    $out = & $csc /nologo /target:library /platform:x64 /out:$tmpOut $iconArg $refs $PluginSrc 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpOut)) {
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
         return ("编译失败: " + $out.Trim() + "`n引用: " + ($refs -join ' '))
@@ -208,6 +212,41 @@ function Register-Command($iniPath, $entry) {
     }
     [IO.File]::WriteAllLines($iniPath, $result, (New-Object System.Text.UTF8Encoding($false)))
     return $null
+}
+
+# ---------- 3b. 清理工具栏里堆积的匿名分组 ----------
+# 早期版本把 ApiCommand.ToolbarName 留空，Cimatron 每次启动都会新建一个
+# "Group -1234567890" 工具栏分组放进 CommandsLayout.xml，导致按钮越启动越多。
+# 这里把只包含本插件命令的匿名分组删掉，只保留菜单项。
+function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
+    $script:RemovedCount = 0
+    $layout = Join-Path $dataDir 'CommandsLayout.xml'
+    if (-not (Test-Path $layout)) { return 0 }
+
+    $text = [IO.File]::ReadAllText($layout, [Text.Encoding]::UTF8)
+    $menuHit = [Regex]::Match($text, 'NcNamer[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
+    if (-not $menuHit.Success) { return 0 }
+    $cmdId = $menuHit.Groups[1].Value
+
+    $pattern = '<StreepGroupModel [^>]*Name="(Group -?\d+)"[^>]*>[\s\S]*?</StreepGroupModel>'
+    $result = [Regex]::Replace($text, $pattern, {
+        param($m)
+        $body = $m.Value
+        $simpleIds = @([Regex]::Matches($body, '<Id Type="Simple" Id="(\d+)"') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        if ($simpleIds.Count -eq 1 -and $simpleIds[0] -eq $cmdId) {
+            $script:RemovedCount++
+            return ''
+        }
+        return $body
+    })
+
+    if ($script:RemovedCount -gt 0) {
+        $null = Backup-File $layout $backupRoot 'CommandsLayout'
+        [IO.File]::WriteAllText($layout, $result, (New-Object System.Text.UTF8Encoding($false)))
+        return $script:RemovedCount
+    }
+    return 0
 }
 
 # ---------- 4. 注入 BJ.EXF 的 NCMETA 行 ----------
@@ -302,6 +341,8 @@ foreach ($inst in $installs) {
     if ($Uninstall) {
         $gone = Remove-LegacyIcons $inst
         if ($gone.Count -gt 0) { Say ("  已清除遗留图标文件 " + $gone.Count + " 个") 'Green' }
+        $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
+        if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
         if (Test-Path $inst.IniPath) {
             $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version)
             $kept = [IO.File]::ReadAllLines($inst.IniPath) | Where-Object { $_ -notmatch '^\s*NcNamer[^=]*=' }
@@ -337,6 +378,12 @@ foreach ($inst in $installs) {
     $dllPath = Join-Path $inst.ProgramDir $dllName
     if (Test-Path $dllPath) { $null = Backup-File $dllPath $backupRoot ('dll_' + $inst.Version) }
 
+    # 图标资源在编译时用 /win32icon 嵌入 DLL，无需额外文件；这里清掉早期版本留下的图标散件
+    foreach ($legacy in @('NcNamer_icon64.png','NcNamer_icon32.png','NcNamer_icon16.png','NcNamer_icon64.ico')) {
+        $p = Join-Path $inst.ProgramDir $legacy
+        if (Test-Path $p) { try { Remove-Item $p -Force } catch { } }
+    }
+
     $err = Build-Plugin $inst $dllPath
     if ($err) {
         Say ("  现场编译失败: " + $err) 'Yellow'
@@ -366,6 +413,10 @@ foreach ($inst in $installs) {
     $entry = 'NcNamerAutoService.NcDumpPlugin=NcNamerAutoService.NcDumpPlugin@' + $FlagSuffix
     $err = Register-Command $inst.IniPath $entry
     if ($err) { Say ("  注册失败: " + $err) 'Red' } else { Say ("  已注册: " + $entry) 'Green' }
+
+    # 6b-2. 清掉历史版本堆积出来的匿名工具栏分组
+    $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
+    if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
 
     # 6c. 后处理目录
     foreach ($pd in $inst.PostDirs) {

@@ -19,16 +19,53 @@ namespace NcNamerAutoService
             var cmd = new ApiCommand
             {
                 Name = "NcNamerAutoService2024",
-                ToolbarName = "",
+                // 必须给固定名字。留空时 Cimatron 每次启动都会新建一个匿名工具栏组
+                // （CommandsLayout.xml 里的 Group -1xxxxxxxxx），按钮数量随启动次数增长。
+                ToolbarName = "NcNamer",
                 MenuPath = "NC\nNcNamerAutoService",
                 Caption = "NcNamer Auto Service",
                 ToolTip = "Automatic NC naming support service",
                 Description = "Background service used automatically by BJ post-processing",
                 Application = ApiApplications.Nc | ApiApplications.NcPart,
                 ExecuteCommand = new NcAutoServiceCommand(),
+                IconSize = ApiIconSize.Large,
+                IconSource = ResolveIcon(),
                 License = "1"
             };
             return cmd;
+        }
+
+        // 图标以 Win32 图标资源的形式嵌在插件 DLL 里（编译时 /win32icon），
+        // Cimatron 通过 LoadIcon 读取。找不到时返回 null，退回默认图标。
+        private static CimWpfContracts.ImageIdentifier ResolveIcon()
+        {
+            try
+            {
+                string dllPath = typeof(NcDumpPlugin).Assembly.Location;
+                NcAutoExportService.AppendLog("Icon: dll=" + dllPath + " exists=" + File.Exists(dllPath));
+                if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath)) return null;
+
+                var identifier = new CimWpfContracts.IconIdentifier(dllPath, 32512, CimWpfContracts.ImageSize.Large);
+                try
+                {
+                    // 用反射探测，避免把 WPF 程序集变成编译期依赖
+                    var helperType = typeof(CimUIInfrastructure.ResourceInteropHelper);
+                    var probeMethod = helperType.GetMethod("GetImage", new[] { typeof(CimWpfContracts.ImageIdentifier) });
+                    object probe = probeMethod.Invoke(null, new object[] { identifier });
+                    NcAutoExportService.AppendLog("Icon: probe=" + (probe == null ? "null" : probe.GetType().Name));
+                }
+                catch (Exception pe)
+                {
+                    Exception inner = pe.InnerException ?? pe;
+                    NcAutoExportService.AppendLog("Icon: probe failed " + inner.Message);
+                }
+                return identifier;
+            }
+            catch (Exception ex)
+            {
+                NcAutoExportService.AppendLog("Icon load skipped: " + ex.Message);
+                return null;
+            }
         }
     }
 
