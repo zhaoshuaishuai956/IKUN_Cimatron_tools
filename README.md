@@ -194,15 +194,34 @@ BJ 后处理
 
 - 实现 `ICimApiCommandPlugin`，随 Cimatron 启动加载。
 - 启动即拉起 `NcAutoExportService`，用 `FileSystemWatcher` 监听 `%USERPROFILE%\NcNamer\export_request_*.txt`。
-- 收到请求后切回 UI 线程，通过
-  `CimApplicationProvider → IApplication → IModelContainer → INcModel.GetItemAsXML(procUid, xmlPath)`
-  导出该程序的 XML。
-- 同一个请求最多重试 8 次；成功后返回 `OKXML|路径|程序号|SHA256`（Base64 编码），失败返回 `ERR|原因`。
+- 校验发起方 PID：请求文件里记录了发起实例的 PID，只有被指定的实例才继续处理。
+- 收到请求后切回 UI 线程，先看活动文档，再用 `IApplication.GetPdm().GetOpenDocuments()`
+  遍历本实例所有打开的文档，逐个尝试
+  `IModelContainer → INcModel.GetItemAsXML(procUid, xmlPath)` 导出该程序的 XML。
+- 导出失败时区分两类错误：`非空闲模式`（等待重试，最多约 60 秒）、其余（直接失败），
+  重试通过定时器排队，不阻塞 Cimatron 界面。
+- 成功后返回 `OKXML|路径|程序号|SHA256`（Base64 编码），失败返回 `ERR|原因`。
 - 令牌去重，避免重复请求造成多次导出。
+
+### 多个 Cimatron 同时打开
+
+同时开着两个及以上 Cimatron 实例时，每个实例都会加载本插件。为避免"另一个实例抢答、
+返回错误的刀长"，流程按实例隔离：
+
+1. 命名器从 `NcPostRename.exe` 沿父进程链向上，找到拉起它的 `CimatronE.exe`。
+   整条链会写进 `post_rename_log.txt` 的 `ProcessChain=...` 一行，便于排查。
+2. 该实例的 PID 写入请求文件（`owner=<pid>`）。
+3. 各实例收到请求后比对 PID：只有一个匹配，其余实例保持静默，不再写响应文件。
+4. 匹配的实例在自己的所有打开文档里查找该程序编号，因此后处理时切到别的文档也不会取错值。
+
+无法确定发起实例时（例如手工双击运行 `NcPostRename.exe`，或后处理经由非子进程执行），
+会退回**广播模式**：所有实例都可应答；取不到数据的实例会延迟 8 秒才写失败结果，
+且不会覆盖已经写入的成功结果。日志里会记录 `Ambiguous: N Cimatron instances running; using broadcast mode`。
 
 ### 3. 命名器 `payload/src/NcPostRenameAuto.cs`
 
 - 运行目录为 Cimatron 的 `TEMP_POST` 时，自动改为其上一级输出目录。
+- 沿父进程链定位发起本次后处理的 Cimatron 实例，把其 PID 写入请求文件（见下节）。
 - 筛选新生成的 NC 候选文件（排除 `.nc` / ` nc` / ` nc.bj` / `.nc.bj` 及后处理附属文件）。
 - 优先尝试 **GPP 直出**：从文件内容解析 `NCMETA2 TOOL=... LEN=...`，适用于迁移到 GPP2 的后处理。
 - 否则解析 `NCMETA PROC=编号`，向插件请求实时 XML。
@@ -245,12 +264,13 @@ NcNamerRepo/
 │  │  └─ NcPostRename.exe       命名器（v2，输出 .bj）
 │  ├─ plugins/
 │  │  ├─ prebuilt_2024_NcNamerAutoService.dll
-│  │  └─ prebuilt_2025_NcNamerAutoService.dll
+│  │  ├─ prebuilt_2025_NcNamerAutoService.dll
+│  │  └─ prebuilt_2026_NcNamerAutoService.dll
 │  └─ src/
 │     ├─ NcNamerAutoService.cs  后台插件源码
 │     └─ NcPostRenameAuto.cs    命名器源码
 └─ dist/
-   └─ NcNamer_Setup_v2_nc.bj.zip   最终多版本一键安装包
+   └─ NcNamer_Setup_v2.1_nc.bj.zip   最终多版本一键安装包
 ```
 
 ## 从源码构建
@@ -312,7 +332,8 @@ $refs = @(
 
 ## 版本说明
 
-- **v2（当前）**：文件名末尾为 `空格 + nc + .bj`（`01-D10-72 nc.bj`）；无最小伸出要求时刀长段记 `NA`。
+- **v2.1（当前）**：多实例支持——只由实际执行后处理的 Cimatron 实例应答，并在该实例的所有打开文档里查找程序；`非空闲` 自动等待重试；新增 2026 预编译插件。
+- **v2**：文件名末尾为 `空格 + nc + .bj`（`01-D10-72 nc.bj`）；无最小伸出要求时刀长段记 `NA`。
 - **v1**：文件名末尾为 `空格 + nc`（无扩展名），已不再发布。
 - 自定义命令图标方案已放弃，命令沿用 Cimatron 默认图标。
 
@@ -321,15 +342,13 @@ $refs = @(
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest |
-| 版本 v2.0.0 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.0.0 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.0.0/NcNamer_Setup_v2_nc.bj.zip |
+| 版本 v2.1.0 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.0 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.0/NcNamer_Setup_v2.1_nc.bj.zip |
 
-安装包 SHA256：`12D7BD8F3FDD70F10E9DF6D1CBF09F9ACC38EAA833BF3600066057604B207197`
-
-下载后可在 PowerShell 中校验（输出的哈希应与上面一致）：
+下载后可在 PowerShell 中校验（SHA256 值见 Releases 页面说明）：
 
 ```powershell
-Get-FileHash .\NcNamer_Setup_v2_nc.bj.zip -Algorithm SHA256
+Get-FileHash .\NcNamer_Setup_v2.1_nc.bj.zip -Algorithm SHA256
 ```
 
-仓库内也留有一份同内容的副本：[`dist/NcNamer_Setup_v2_nc.bj.zip`](dist/NcNamer_Setup_v2_nc.bj.zip)，解压后即为安装器目录。
+仓库内也留有一份同内容的副本：[`dist/NcNamer_Setup_v2.1_nc.bj.zip`](dist/NcNamer_Setup_v2.1_nc.bj.zip)，解压后即为安装器目录。

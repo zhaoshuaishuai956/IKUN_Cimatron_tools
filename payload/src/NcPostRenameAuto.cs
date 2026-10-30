@@ -24,6 +24,37 @@ class NcPostRename
     [DllImport("user32.dll")]
     static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    // ---- 进程链识别：找出实际执行本次后处理的 Cimatron 实例 ----
+    const uint TH32CS_SNAPPROCESS = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct PROCESSENTRY32
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr hObject);
+
+    // 由本进程所属的 Cimatron 实例 PID；0 表示无法确定（退回广播模式）
+    static int OwnerPid;
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -39,6 +70,10 @@ class NcPostRename
         var runLog = new StringBuilder();
         Log(runLog, "CWD=" + cwd);
         Log(runLog, "OutputDir=" + outputDir);
+
+        // 多开场景：本进程由 Cimatron 的后处理钩子拉起，沿父进程链可定位实际发起者。
+        OwnerPid = FindOwnerCimatronPid(runLog);
+        Log(runLog, "OwnerCimatronPid=" + OwnerPid);
 
         using (var mutex = new Mutex(false, "NcPostRenameMutex"))
         {
@@ -149,6 +184,82 @@ class NcPostRename
         public string XmlPath;
     }
 
+    // 沿父进程链向上找到发起本次后处理的 CimatronE.exe。
+    // 找不到时，若本机只有一个 Cimatron 实例就直接采用它；否则返回 0（退回广播模式）。
+    static int FindOwnerCimatronPid(StringBuilder log)
+    {
+        var parents = new Dictionary<uint, uint>();
+        var names = new Dictionary<uint, string>();
+        IntPtr snapshot = IntPtr.Zero;
+        try
+        {
+            snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1))
+            {
+                Log(log, "Process snapshot unavailable");
+                return 0;
+            }
+            var entry = new PROCESSENTRY32();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+            if (!Process32First(snapshot, ref entry))
+            {
+                Log(log, "Process snapshot empty");
+                return 0;
+            }
+            do
+            {
+                parents[entry.th32ProcessID] = entry.th32ParentProcessID;
+                names[entry.th32ProcessID] = entry.szExeFile;
+            } while (Process32Next(snapshot, ref entry));
+        }
+        catch (Exception ex)
+        {
+            Log(log, "Process snapshot failed: " + ex.Message);
+            return 0;
+        }
+        finally
+        {
+            if (snapshot != IntPtr.Zero && snapshot != new IntPtr(-1)) CloseHandle(snapshot);
+        }
+
+        var chain = new StringBuilder();
+        uint pid = (uint)Process.GetCurrentProcess().Id;
+        for (int depth = 0; depth < 12 && pid != 0; depth++)
+        {
+            string name;
+            if (!names.TryGetValue(pid, out name)) break;
+            chain.Append(pid).Append(':').Append(name).Append(" <- ");
+            if (IsCimatronProcessName(name))
+            {
+                Log(log, "ProcessChain=" + chain.ToString().TrimEnd(' ', '<', '-'));
+                return (int)pid;
+            }
+            uint parent;
+            if (!parents.TryGetValue(pid, out parent)) break;
+            pid = parent;
+        }
+        Log(log, "ProcessChain=" + chain.ToString().TrimEnd(' ', '<', '-') + " (no Cimatron ancestor)");
+
+        var found = new List<uint>();
+        foreach (var pair in names)
+        {
+            if (IsCimatronProcessName(pair.Value)) found.Add(pair.Key);
+        }
+        if (found.Count == 1)
+        {
+            Log(log, "Single Cimatron instance fallback pid=" + found[0]);
+            return (int)found[0];
+        }
+        if (found.Count > 1) Log(log, "Ambiguous: " + found.Count + " Cimatron instances running; using broadcast mode");
+        return 0;
+    }
+
+    static bool IsCimatronProcessName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        return name.IndexOf("Cimatron", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     static bool TryLoadFreshMeta(string ncPath, StringBuilder log, out PostMeta meta, out string error)
     {
         meta = null;
@@ -249,8 +360,10 @@ class NcPostRename
         {
             Directory.CreateDirectory(dir);
             if (File.Exists(responsePath)) File.Delete(responsePath);
-            File.WriteAllText(requestPath, "", new UTF8Encoding(true));
-            Log(log, "FreshXmlRequest=" + requestPath);
+            // 记录发起方所在 Cimatron 实例的 PID；插件据此决定是否由自己应答，
+            // 多开时其它实例保持静默，避免抢答或覆盖正确结果。
+            File.WriteAllText(requestPath, "owner=" + OwnerPid + Environment.NewLine, new UTF8Encoding(true));
+            Log(log, "FreshXmlRequest=" + requestPath + " ownerPid=" + OwnerPid);
 
             DateTime deadline = DateTime.Now.AddSeconds(FreshXmlTimeoutSeconds);
             while (DateTime.Now < deadline)
@@ -322,7 +435,9 @@ class NcPostRename
                 Thread.Sleep(25);
             }
             error = string.IsNullOrEmpty(lastError)
-                ? "Fresh XML timeout after " + FreshXmlTimeoutSeconds + " seconds"
+                ? (OwnerPid > 0
+                    ? "Fresh XML timeout after " + FreshXmlTimeoutSeconds + "s: Cimatron instance pid " + OwnerPid + " did not respond (plugin not loaded in that instance?)"
+                    : "Fresh XML timeout after " + FreshXmlTimeoutSeconds + " seconds")
                 : "Fresh XML failed: " + lastError;
             return false;
         }
