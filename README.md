@@ -332,7 +332,8 @@ $refs = @(
 
 ## 版本说明
 
-- **v2.1（当前）**：多实例支持——只由实际执行后处理的 Cimatron 实例应答，并在该实例的所有打开文档里查找程序；`非空闲` 自动等待重试；新增 2026 预编译插件。
+- **v2.1.1（当前）**：修正请求文件的写入竞态——先写临时文件再原子改名，避免插件读到空文件而误判为广播请求。
+- **v2.1**：多实例支持——只由实际执行后处理的 Cimatron 实例应答，并在该实例的所有打开文档里查找程序；`非空闲` 自动等待重试；新增 2026 预编译插件。
 - **v2**：文件名末尾为 `空格 + nc + .bj`（`01-D10-72 nc.bj`）；无最小伸出要求时刀长段记 `NA`。
 - **v1**：文件名末尾为 `空格 + nc`（无扩展名），已不再发布。
 - 自定义命令图标方案已放弃，命令沿用 Cimatron 默认图标。
@@ -342,8 +343,8 @@ $refs = @(
 | 内容 | 地址 |
 | --- | --- |
 | 最新安装包 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/latest |
-| 版本 v2.1.0 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.0 |
-| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.0/NcNamer_Setup_v2.1_nc.bj.zip |
+| 版本 v2.1.1 | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/tag/v2.1.1 |
+| 直接下载 zip | https://github.com/zhaoshuaishuai956/cimatron-nc-namer/releases/download/v2.1.1/NcNamer_Setup_v2.1_nc.bj.zip |
 
 下载后可在 PowerShell 中校验（SHA256 值见 Releases 页面说明）：
 

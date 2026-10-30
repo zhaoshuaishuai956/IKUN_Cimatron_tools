@@ -132,6 +132,12 @@ namespace NcNamerAutoService
                 try
                 {
                     string text = File.ReadAllText(requestPath, Encoding.UTF8);
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        // 文件刚创建、内容尚未落盘，稍等再看
+                        Thread.Sleep(25);
+                        continue;
+                    }
                     int idx = text.IndexOf("owner=", StringComparison.OrdinalIgnoreCase);
                     if (idx < 0) return 0;
                     int start = idx + "owner=".Length;
@@ -141,7 +147,7 @@ namespace NcNamerAutoService
                     if (end > start && int.TryParse(text.Substring(start, end - start), out pid)) return pid;
                     return 0;
                 }
-                catch (IOException) { Thread.Sleep(20); }
+                catch (IOException) { Thread.Sleep(25); }
                 catch (Exception) { return 0; }
             }
             return 0;

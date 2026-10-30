@@ -362,7 +362,11 @@ class NcPostRename
             if (File.Exists(responsePath)) File.Delete(responsePath);
             // 记录发起方所在 Cimatron 实例的 PID；插件据此决定是否由自己应答，
             // 多开时其它实例保持静默，避免抢答或覆盖正确结果。
-            File.WriteAllText(requestPath, "owner=" + OwnerPid + Environment.NewLine, new UTF8Encoding(true));
+            // 先写临时文件再原子改名，保证插件看到请求时内容已经完整。
+            string stagedPath = requestPath + ".staged";
+            try { if (File.Exists(requestPath)) File.Delete(requestPath); } catch { }
+            File.WriteAllText(stagedPath, "owner=" + OwnerPid + Environment.NewLine, new UTF8Encoding(true));
+            File.Move(stagedPath, requestPath);
             Log(log, "FreshXmlRequest=" + requestPath + " ownerPid=" + OwnerPid);
 
             DateTime deadline = DateTime.Now.AddSeconds(FreshXmlTimeoutSeconds);
