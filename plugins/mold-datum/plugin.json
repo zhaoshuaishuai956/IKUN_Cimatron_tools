@@ -1,0 +1,11 @@
+{
+  "folder": "mold-datum",
+  "displayName": "铁模四边基准",
+  "dll": "MoldDatumPlugin.dll",
+  "sources": ["src/MoldDatumPlugin.cs", "src/DatumDialog.cs", "src/DatumToolpath.cs"],
+  "commandClass": "MoldDatumPlugin.MoldDatumPlugin",
+  "iconSource": "payload/common/MoldDatum_icon64.ico",
+  "prebuiltPattern": "payload/plugins/prebuilt_{version}_MoldDatumPlugin.dll",
+  "iniPrefix": "MoldDatumPlugin",
+  "postProcess": ""
+}
