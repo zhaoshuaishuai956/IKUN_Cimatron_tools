@@ -1,0 +1,10 @@
+{
+  "folder": "nc-rename",
+  "displayName": "NC重命名",
+  "dll": "NcNamerAutoService.dll",
+  "sources": ["src/NcNamerAutoService.cs", "src/ToolboxUpdate.cs"],
+  "commandClass": "NcNamerAutoService.NcDumpPlugin",
+  "iconSource": "payload/common/NcNamer_icon64.ico",
+  "prebuiltPattern": "payload/plugins/prebuilt_{version}_NcNamerAutoService.dll",
+  "postProcess": "nc-rename"
+}

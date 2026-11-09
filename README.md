@@ -14,6 +14,7 @@ Cimatron 二次开发插件集。所有插件统一挂在 Cimatron 的**顶级�
 | --- | --- | --- |
 | **NC重命名** | IKUN思美创工具箱 → NC → NC重命名 | BJ 后处理完成后自动把 NC 程序重命名为 `序号-刀名-刀长 nc.bj`，刀长取自 Cimatron 实时数据 |
 | **顶针顶面拉平** | IKUN思美创工具箱 → 模具 → 顶针顶面拉平 | 非模态对话框内操作；框选整个顶针体可自动识别顶面与轴线方向，或手动选顶面并指定 ±X/±Y/±Z |
+| **铁模四边基准** | IKUN思美创工具箱 → 模具 → 铁模四边基准 | 自动识别铁模 ±X/±Y 四个侧面，每面生成 2 条基准线（共 8 条），可选套用 NC 模板生成铣削工序 |
 
 新增插件只需在 `plugins/` 下加一个带 `plugin.json` 的目录（见「开发新插件」）。
 
@@ -21,7 +22,7 @@ Cimatron 二次开发插件集。所有插件统一挂在 Cimatron 的**顶级�
 
 `assets/icons/ikun/` 存放 32 张待用的 IKUN 梗图插件图标（512 PNG / 64 PNG / 16–256 多尺寸 ICO），并附 `README.md` 编号清单和 `preview.png` 总览。
 
-NC重命名 使用 **#59**（原 IKUN 图标）；顶针顶面拉平使用 **#64**（皮卡丘头套篮球），源文件在 `plugins/ejector-pin-flatten/payload/common/EjectorPin_icon64.ico`。后续新插件从图标库选一个 ICO，复制到 `plugins/<插件>/payload/common/<名称>_icon64.ico`，再把 `plugin.json` 的 `iconSource` 指向它即可。
+NC重命名 使用 **#59**（原 IKUN 图标）；顶针顶面拉平使用 **#64**（皮卡丘头套篮球），源文件在 `plugins/ejector-pin-flatten/payload/common/EjectorPin_icon64.ico`；铁模四边基准使用 **#2**，源文件在 `plugins/mold-datum/payload/common/MoldDatum_icon64.ico`。后续新插件从图标库选一个 ICO，复制到 `plugins/<插件>/payload/common/<名称>_icon64.ico`，再把 `plugin.json` 的 `iconSource` 指向它即可。
 
 - 图标库说明：安装包内 `assets/icons/ikun/README.md`（约 32 张待用图标）
 - 图标来源：[wzwtt/ikun](https://github.com/wzwtt/ikun)
@@ -241,6 +242,56 @@ BJ 后处理
 - 替换面由 Cimatron 内核执行；单个顶针失败不会影响其他顶针，结果里会列出失败原因，原顶面保持不变。
 - 执行过程写入 `%USERPROFILE%\NcNamer\pin_flatten_log.txt`。
 
+## 铁模四边基准 插件说明
+
+在**编程(NC)模块**下，自动在铁模四个侧面生成基准线，并可套用 NC 模板出铣削工序。
+
+### 使用步骤
+
+1. 在 Cimatron 里打开铁模的 **NC 编程文档**
+2. 点 `IKUN思美创工具箱 → 模具 → 铁模四边基准`
+3. 对话框打开时**自动识别 4 个侧面**（±X / ±Y），无需手动选面；也可点「自动识别」重取
+4. 核对「识别到的侧面」与 8 条基准线坐标
+5. 点「创建线条」→ 8 条线写入模型
+6. 点「套用模板」→ 用 `6平-铣基准.tpt` 生成工序（加工参数全部沿用模板）
+7. 在该工序里框选这 8 条线确认几何（见下方限制）
+8. 回对话框点「执行刀路」
+
+### 基准线规则
+
+四周各 2 条，共 8 条。以单个侧面为例：
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `D` 刀具直径 | 6.0 | 用于推算凹深 |
+| `d` 距侧面 | 2.5 | 线在侧面**外侧**的法向偏移量 |
+| `s` 距角点 | 10.0 | 线起点与该面端部（侧边交点）的距离 |
+| `L` 线长 | 10.0 | 单条基准线长度 |
+
+- 线平行于侧面、位于侧面**外侧**偏移 `d` 处
+- **凹深 = `D/2 − d`**（只读推算，默认 `3 − 2.5 = 0.5`）；`d ≥ D/2` 时拒绝执行
+- `Z` 取该线自身跨度内**顶面最高点**，适配斜顶面与多级顶面（不会飘在低的一侧）
+
+### 自动识别方式
+
+扫描模型全部面：包围盒 Z 向最薄的判为顶/底面跳过；水平两向厚度相当的判为非竖直面跳过；
+其余按「法向轴 + 平面坐标」分组（**同向共面的多块面自动合并**，应对侧面被分割），
+每个方向取面积最大的一组，得到 ±X/±Y 四个侧面。
+
+### 已知限制（重要）
+
+Cimatron 2024/2025/2026 的 NC API **没有开放刀路几何绑定**：
+`INcModel.SetCriteriaSet` 未公开且实测无效（多数参数直接抛「操作失败」），
+控制实验（给目标零件绑面）同样失败，模板内也没有可替换的命名集合，
+套模板前先选中实体也不会自动绑定。
+
+所以第 7 步的几何确认需**人工完成一次**（8 条线已建好且已选中，通常一次框选即可）。
+其余步骤（识别、算线、建线、套模板、执行刀路）全自动。
+
+### 日志
+
+`%USERPROFILE%\NcNamer\mold_datum_log.txt`，含识别结果、每条线坐标、模板与工序 UID、阶段2各步过程。
+
 ## 目录结构
 
 ```
@@ -265,8 +316,21 @@ IKUN_Cimatron_tools/
 │     └─ payload/
 │        ├─ common/EjectorPin_icon64.ico
 │        └─ plugins/prebuilt_2024_EjectorPinFlatten.dll
+│  └─ mold-datum/               铁模四边基准 插件
+│     ├─ plugin.json
+│     ├─ src/
+│     │  ├─ MoldDatumPlugin.cs        几何识别 / 建线 / 插件入口
+│     │  ├─ DatumDialog.cs            非模态对话框
+│     │  └─ DatumToolpath.cs          套模板 / 执行刀路
+│     └─ payload/
+│        ├─ common/MoldDatum_icon64.ico
+│        └─ plugins/prebuilt_{2024,2025,2026}_MoldDatumPlugin.dll
+├─ assets/icons/ikun/           IKUN 梗图图标库（ICO / 64 PNG / 512 PNG）
+├─ tools/                       构建与发布脚本（build_payload.ps1 等）
+├─ updater/                     启动自动更新器
 └─ dist/
-   └─ IKUN_Cimatron_tools_Setup.zip  最终安装包
+   ├─ IKUN_Cimatron_tools_Setup.zip        最终安装包
+   └─ IKUN_Cimatron_Plugins_2024.zip       自动更新用增量资源
 ```
 
 ## 开发新插件
@@ -334,6 +398,8 @@ IKUN_Cimatron_tools/
 | `%USERPROFILE%\NcNamer\auto_service_log.txt` | NC重命名 插件启动、请求、XML 导出、图标投放 |
 | `%USERPROFILE%\NcNamer\post_rename_log.txt` | 命名器每次运行日志（覆盖写） |
 | `%USERPROFILE%\NcNamer\pin_flatten_log.txt` | 顶针顶面拉平：插件加载、选择/分组、目标高度、替换结果 |
+| `%USERPROFILE%\NcNamer\mold_datum_log.txt` | 铁模四边基准：自动识别结果、8 条线坐标、模板与工序 UID、阶段2 各步过程 |
+| `%USERPROFILE%\NcNamer\mold_datum_tp*.xml` | 铁模四边基准阶段2 的工序树快照（排查几何绑定用） |
 | `%USERPROFILE%\NcNamer\install_report.txt` | 最近一次安装报告 |
 | `%USERPROFILE%\NcNamer\backup_时间戳\` | 安装前备份（ini / dll / exe / exf / 钩子 / 布局） |
 | 输出目录 `NC_RENAME_FAILED.txt` | 命名失败原因，原 NC 文件保持不变 |
@@ -352,6 +418,9 @@ IKUN_Cimatron_tools/
    菜单项是否在 `ExternalCommands.ini` 的 `[Plugin Ext Commands]` 里。
    首次安装为 `@1`；Part 菜单写入 `CommandsLayout.xml` 后，安装器会按 Part 菜单自动注册 `@0`
    （`@0` 只表示不再重复插入菜单，插件仍会加载，菜单已在布局中）。
+7. 铁模四边基准：`mold_datum_log.txt` 是否出现 `MoldDatumPlugin loaded`；
+   自动识别失败时看 `AutoDetect:` 那几行的候选组尺寸；
+   套模板后若 `轮廓` 为 0 属已知限制（需在工序内手动确认一次几何）。
 
 ## 设计约束
 
@@ -362,6 +431,7 @@ IKUN_Cimatron_tools/
 
 ## 版本说明
 
+- **v3.4（开发中）**：新增「铁模四边基准」插件：自动识别铁模 ±X/±Y 四个侧面（同向共面的面自动合并，无需手动选面），每面生成 2 条基准线共 8 条；外侧偏移 `d`、距角点 `s`、线长 `L` 可调，凹深 `D/2 − d` 只读推算，`d ≥ D/2` 时拒绝执行；线高取该线跨度内顶面最高点，适配斜顶面与多级顶面；可套用 `6平-铣基准.tpt` 生成铣削工序，加工参数全部沿用模板不改；提供 2024/2025/2026 三个版本预编译 DLL（各自链接对应版本 interop，不互相冒充）。已知限制：Cimatron NC API 未开放刀路几何绑定，工序内几何确认需人工完成一次，其余步骤全自动。
 - **v3.3（开发中）**：新增「顶针顶面拉平」插件：非模态对话框内选择；支持框选整个顶针体或只框选顶面自动识别顶针、顶面与轴线方向（仅选顶面时会自动关联所属实体，两端都是平面跳过）；方向支持世界 / 当前 UCS 的 ±X / ±Y / ±Z；方向与顶面不匹配时拒绝替换并提示；执行后隐藏辅助面，失败尝试的辅助面也会隐藏。NC重命名 的菜单在普通 Part 文档下也显示；两个插件使用各自独立的图标；启动提示只显示「IKUN工具箱已加载」；新增启动时 GitHub Release 自动更新（原子替换 DLL/图标/更新器）；安装脚本改为扫描 `plugins/*/plugin.json`，新增插件不再需要改脚本；NC重命名 的注册和后处理钩子保持不变。
 - **v3.2**：修复安装时图标步骤报错（PowerShell `+` 在左操作数为数字时会做数值加法，`$id + '_x.ico'` 抛异常）；去掉 DLL 里多余的嵌入图标。
 - **v3.1**：启动提示改为**每次打开 Cimatron 都弹出**（去掉「只弹一次」的标记文件），同一进程内不会重复弹。

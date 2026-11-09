@@ -16,3 +16,7 @@ obj/
 # 系统文件
 Thumbs.db
 Desktop.ini
+
+# 安装包解压/打包中间产物（只保留最终 zip）
+dist/setup_*/
+dist/payload_*/

@@ -1,0 +1,10 @@
+{
+  "folder": "ejector-pin-flatten",
+  "displayName": "顶针顶面拉平",
+  "dll": "EjectorPinFlatten.dll",
+  "sources": ["src/EjectorPinFlatten.cs"],
+  "commandClass": "EjectorPinFlatten.EjectorPinFlattenPlugin",
+  "iconSource": "payload/common/EjectorPin_icon64.ico",
+  "prebuiltPattern": "payload/plugins/prebuilt_{version}_EjectorPinFlatten.dll",
+  "postProcess": ""
+}

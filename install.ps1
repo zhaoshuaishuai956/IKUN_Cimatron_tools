@@ -1,10 +1,11 @@
 ﻿# IKUN思美创工具箱 - Cimatron 二次开发插件 · 多版本一键安装脚本
 # 支持 Cimatron 2024 / 2025 / 2026（E11 见报告中的降级说明）
 #
-# 目录约定（新增插件时照此放置，安装脚本按 plugins\* 逐个处理）：
+# 插件目录约定（安装脚本自动扫描）：
+#   plugins\<插件目录>\plugin.json           插件清单
 #   plugins\<插件目录>\src\*.cs              插件源码（安装时按目标版本现场编译）
-#   plugins\<插件目录>\payload\common\*      通用二进制（如 NcPostRename.exe、图标）
-#   plugins\<插件目录>\payload\plugins\*     预编译 DLL（命名 prebuilt_<版本>_<名称>.dll）
+#   plugins\<插件目录>\payload\common\*      通用二进制（图标、外部 exe）
+#   plugins\<插件目录>\payload\plugins\*     预编译 DLL（prebuilt_<版本>_<名称>.dll）
 param(
     [switch]$Uninstall,
     [string]$OnlyVersion,
@@ -14,11 +15,6 @@ param(
 $ErrorActionPreference = 'Continue'
 $ToolboxName = 'IKUN思美创工具箱'
 $PluginsRoot = Join-Path $PSScriptRoot 'plugins'
-$PluginRoot  = Join-Path $PluginsRoot 'nc-rename'
-$SrcDir      = Join-Path $PluginRoot 'src'
-$CommonDir   = Join-Path $PluginRoot 'payload\common'
-$PluginDir   = Join-Path $PluginRoot 'payload\plugins'
-$PluginSrc   = Join-Path $SrcDir 'NcNamerAutoService.cs'
 $FlagSuffix  = if ($AutoLoadOff) { '0' } else { '1' }
 
 $script:Report = New-Object System.Collections.Generic.List[string]
@@ -43,6 +39,42 @@ function Backup-File($path, $backupRoot, $label) {
         Copy-Item $path $dest -Force
         return $dest
     } catch { return $null }
+}
+
+# ---------- 0. 读取插件清单 ----------
+function Get-Plugins {
+    $found = New-Object System.Collections.Generic.List[object]
+    if (-not (Test-Path $PluginsRoot)) { return ,$found }
+
+    $manifests = @(Get-ChildItem -Path $PluginsRoot -Filter 'plugin.json' -File -Recurse -ErrorAction SilentlyContinue)
+    foreach ($manifest in $manifests) {
+        try {
+            $json = Get-Content -LiteralPath $manifest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            $dir = $manifest.DirectoryName
+            $sources = New-Object System.Collections.Generic.List[string]
+            foreach ($source in @($json.sources)) {
+                if (-not $source) { continue }
+                $sources.Add((Join-Path $dir ($source -replace '/', '\')))
+            }
+
+            $plugin = [PSCustomObject]@{
+                Folder          = $dir
+                FolderName      = [string]$json.folder
+                DisplayName     = [string]$json.displayName
+                Dll             = [string]$json.dll
+                Sources         = $sources
+                CommandClass    = [string]$json.commandClass
+                IconSource      = (Join-Path $dir ([string]$json.iconSource -replace '/', '\'))
+                PrebuiltPattern = (Join-Path $dir ([string]$json.prebuiltPattern -replace '/', '\'))
+                PostProcess     = [string]$json.postProcess
+                IniPrefix       = [string]$json.iniPrefix
+            }
+            $found.Add($plugin)
+        } catch {
+            Say ("  插件清单解析失败: " + $manifest.FullName + " :: " + $_.Exception.Message) 'Red'
+        }
+    }
+    return ,$found
 }
 
 # ---------- 1. 探测本机所有 Cimatron 安装 ----------
@@ -133,7 +165,7 @@ function Find-Installations {
 }
 
 # ---------- 2. 编译插件 DLL（用目标机器自身的 Cimatron 引用） ----------
-function Build-Plugin($inst, $outDll) {
+function Build-Plugin($inst, $plugin, $outDll) {
     $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     if (-not (Test-Path $csc)) { return "未找到 csc.exe" }
 
@@ -145,19 +177,23 @@ function Build-Plugin($inst, $outDll) {
         'interop.CimServicesAPI.dll'
         'interop.CimAppAccess.dll'
         'interop.CimBaseAPI.dll'
+        'interop.CimMdlrAPI.dll'
     )
     $refs = New-Object System.Collections.Generic.List[string]
     foreach ($f in $refFiles) {
         $full = Join-Path $inst.ProgramDir $f
         if (Test-Path $full) { $refs.Add('/r:' + $full) }
     }
-    foreach ($s in @('System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Windows.Forms.dll')) {
+    foreach ($s in @('System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll')) {
         $refs.Add('/r:' + $s)
     }
 
-    $tmpOut = Join-Path $env:TEMP ('NcNamerAutoService_' + [Guid]::NewGuid().ToString('N') + '.dll')
-    # 图标注放走 Images\Commands 机制（见 Install-CommandIcon），不再往 DLL 里嵌资源
-    $out = & $csc /nologo /target:library /platform:x64 /out:$tmpOut $refs $PluginSrc 2>&1 | Out-String
+    $sources = @($plugin.Sources)
+    if ($sources.Count -eq 0) { return "插件没有源码" }
+
+    $tmpName = [IO.Path]::GetFileNameWithoutExtension($plugin.Dll) + '_' + [Guid]::NewGuid().ToString('N') + '.dll'
+    $tmpOut = Join-Path $env:TEMP $tmpName
+    $out = & $csc /nologo /target:library /platform:x64 /codepage:65001 /out:$tmpOut $refs $sources 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpOut)) {
         if (Test-Path $tmpOut) { Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue }
         return ("编译失败: " + $out.Trim() + "`n引用: " + ($refs -join ' '))
@@ -172,9 +208,7 @@ function Build-Plugin($inst, $outDll) {
     return $null
 }
 
-# ---------- 2b. 清理早期版本遗留的图标文件 ----------
-# 早期调试版本写过 NcNamer_icon*.png / .ico 到 Program 目录和 %USERPROFILE%\NcNamer\。
-# 现在唯一在用的是 NcNamer_icon64.ico（命令图标的源文件），必须保留。
+# ---------- 2b. 清理早期版本遗留的图标文件（仅 nc-rename） ----------
 function Remove-LegacyIcons($inst) {
     $dirs = @($inst.ProgramDir, (Join-Path $env:USERPROFILE 'NcNamer'))
     $targets = New-Object System.Collections.Generic.List[string]
@@ -192,13 +226,56 @@ function Remove-LegacyIcons($inst) {
     return ,$removed
 }
 
+# ---------- 2c. 编译独立更新器 ----------
+function Build-Updater {
+    $src = Join-Path $PSScriptRoot 'updater\IKUNUpdater.cs'
+    if (-not (Test-Path $src)) { return ('更新器源码缺失: ' + $src) }
+
+    $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (-not (Test-Path $csc)) { return '未找到 csc.exe' }
+
+    $outDir = Join-Path $env:USERPROFILE 'NcNamer'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $out = Join-Path $outDir 'IKUNUpdater.exe'
+    $tmp = Join-Path $env:TEMP ('IKUNUpdater_' + [Guid]::NewGuid().ToString('N') + '.exe')
+
+    $refs = @(
+        '/r:System.dll'
+        '/r:System.Core.dll'
+        '/r:System.Windows.Forms.dll'
+        '/r:System.Drawing.dll'
+        '/r:System.IO.Compression.dll'
+        '/r:System.IO.Compression.FileSystem.dll'
+    )
+    $outText = & $csc /nologo /target:winexe /platform:anycpu /codepage:65001 "/out:$tmp" $refs $src 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        return ('更新器编译失败: ' + $outText.Trim())
+    }
+
+    try {
+        Copy-Item $tmp $out -Force
+    } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        return ('更新器无法写入(可能正在运行): ' + $_.Exception.Message)
+    }
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    return $null
+}
+
 # ---------- 3. 注册 ExternalCommands.ini ----------
-function Register-Command($iniPath, $entry) {
+function Get-IniPrefix($plugin) {
+    if ($plugin.IniPrefix) { return $plugin.IniPrefix }
+    return (($plugin.CommandClass -split '\.')[0])
+}
+
+function Register-Command($iniPath, $plugin, $entry) {
     if (-not (Test-Path $iniPath)) { return "ExternalCommands.ini 不存在: $iniPath" }
+    $prefix = [Regex]::Escape((Get-IniPrefix $plugin))
     $lines = [IO.File]::ReadAllLines($iniPath)
     $kept = New-Object System.Collections.Generic.List[string]
     foreach ($l in $lines) {
-        if ($l -match '^\s*NcNamer[^=]*=') { continue }
+        if ($l -match ('^\s*' + $prefix + '[^=]*=')) { continue }
         # ResetApiCommands=1 会让 Cimatron 在启动时把所有插件项改回 @0，
         # 结果菜单永远不会被插入（AddApiDefaultMenu 只在 ResetMode==1 时执行）。
         if ($l -match '^\s*ResetApiCommands\s*=') { $kept.Add('ResetApiCommands =0'); continue }
@@ -229,10 +306,17 @@ function Register-Command($iniPath, $entry) {
     return $null
 }
 
-# ---------- 3b. 清理工具栏里堆积的匿名分组 ----------
-# 早期版本把 ApiCommand.ToolbarName 留空，Cimatron 每次启动都会新建一个
-# "Group -1234567890" 工具栏分组放进 CommandsLayout.xml，导致按钮越启动越多。
-# 这里把只包含本插件命令的匿名分组删掉，只保留菜单项。
+function Remove-CommandRegistration($iniPath, $plugin) {
+    if (-not (Test-Path $iniPath)) { return $false }
+    $prefix = [Regex]::Escape((Get-IniPrefix $plugin))
+    $lines = [IO.File]::ReadAllLines($iniPath)
+    $kept = @($lines | Where-Object { $_ -notmatch ('^\s*' + $prefix + '[^=]*=') })
+    if ($kept.Count -eq $lines.Count) { return $false }
+    [IO.File]::WriteAllLines($iniPath, $kept, (New-Object System.Text.UTF8Encoding($false)))
+    return $true
+}
+
+# ---------- 3b. 清理工具栏里堆积的匿名分组（仅 nc-rename） ----------
 function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
     $script:RemovedCount = 0
     $layout = Join-Path $dataDir 'CommandsLayout.xml'
@@ -240,7 +324,6 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
 
     $text = [IO.File]::ReadAllText($layout, [Text.Encoding]::UTF8)
 
-    # 历史遗留的菜单/工具栏组名：改名后要让 Cimatron 按新配置重建
     $staleNames = @('NcNamerAutoService', 'IKUN tools')
 
     $menuHit = [Regex]::Match($text, 'NcNamer[\s\S]{0,800}?<Id Type="Simple" Id="(\d+)"')
@@ -248,7 +331,6 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
     if (-not $menuHit.Success) { return 0 }
     $cmdId = $menuHit.Groups[1].Value
 
-    # 1) 只含本插件命令的匿名工具栏组（旧版 ToolbarName 留空造成的重复按钮）
     $grpPattern = '<StreepGroupModel [^>]*Name="(Group -?\d+)"[^>]*>[\s\S]*?</StreepGroupModel>'
     $result = [Regex]::Replace($text, $grpPattern, {
         param($m)
@@ -258,7 +340,6 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
         return $m.Value
     })
 
-    # 2) 旧名字的分组（改名后必须移除，否则菜单里会同时出现新旧两项）
     foreach ($stale in $staleNames) {
         $esc = [Regex]::Escape($stale)
         $subPattern = '<StreepSubMenuGroupModel [^>]*Name="' + $esc + '"[^>]*>[\s\S]*?</StreepSubMenuGroupModel>'
@@ -269,7 +350,6 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
         })
     }
 
-    # 3) 旧名字的顶级菜单（例如曾经的「IKUN tools」菜单），空的整块删掉
     foreach ($stale in $staleNames) {
         $esc = [Regex]::Escape($stale)
         $menuPattern = '<StreepSubMenuModel [^>]*Name="' + $esc + '"[^>]*>[\s\S]*?</StreepSubMenuModel>'
@@ -289,9 +369,6 @@ function Remove-StrayToolbarGroups($dataDir, $backupRoot) {
 }
 
 # ---------- 3c. 投放命令图标 ----------
-# Cimatron 的图标机制：CreateCommand 时按命令 ID 在 DataDir\Images\Commands
-# 里找 {ID}_*.ico，找不到就用 99999_Missing.ico（黄底红叉占位图）。
-# 所以把图标复制成 {ID}_IKUNtools.ico 即可，插件启动时也会自己再做一次。
 function Get-ApiCommandId([string]$key) {
     $text = $key.ToLowerInvariant()
     $sum = 0
@@ -303,15 +380,69 @@ function Get-ApiCommandId([string]$key) {
     return 49152 + ($sum % 4096)
 }
 
-function Install-CommandIcon($inst, $backupRoot) {
-    $src = Join-Path $CommonDir 'NcNamer_icon64.ico'
-    if (-not (Test-Path $src)) { return '图标源文件缺失' }
+function Test-CommandInPartMenu($dataDir, $commandClass) {
+    $layout = Join-Path $dataDir 'CommandsLayout.xml'
+    if (-not (Test-Path $layout)) { return $false }
+    $id = Get-ApiCommandId $commandClass
+    try {
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($layout)
+        $menus = @($xml.SelectNodes('//StreepSubMenuModel[@Application="Part" and @Name="IKUN思美创工具箱"]'))
+        foreach ($menu in $menus) {
+            foreach ($node in @($menu.SelectNodes('.//Id[@Type="Simple"]'))) {
+                if ($node.GetAttribute('Id') -eq [string]$id) { return $true }
+            }
+        }
+    } catch { return $false }
+    return $false
+}
+
+# 同一命令在 @1 状态下被多次启动 Cimatron 会重复插入同一工具栏组。
+# 清理 IKUN 工具箱工具栏组里的重复命令，保留第一个，避免按钮越开越多。
+function Remove-DuplicateToolbarItems($dataDir, $backupRoot) {
+    $layout = Join-Path $dataDir 'CommandsLayout.xml'
+    if (-not (Test-Path $layout)) { return 0 }
+
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.Load($layout)
+
+    $removed = 0
+    foreach ($group in @($xml.SelectNodes('//StreepGroupModel[@Name="IKUN思美创工具箱"]'))) {
+        $seen = @{}
+        foreach ($item in @($group.SelectNodes('Items/StreepBaseItem'))) {
+            $idNode = $item.SelectSingleNode('Id[@Type="Simple"]')
+            if ($null -eq $idNode) { continue }
+            $id = $idNode.GetAttribute('Id')
+            if ($seen.ContainsKey($id)) {
+                $item.ParentNode.RemoveChild($item) | Out-Null
+                $removed++
+            } else {
+                $seen[$id] = $true
+            }
+        }
+    }
+
+    if ($removed -gt 0) {
+        $null = Backup-File $layout $backupRoot 'CommandsLayout_dedupe'
+        $settings = New-Object System.Xml.XmlWriterSettings
+        $settings.Encoding = New-Object System.Text.UTF8Encoding($false)
+        $settings.Indent = $false
+        $settings.OmitXmlDeclaration = $false
+        $writer = [System.Xml.XmlWriter]::Create($layout, $settings)
+        try { $xml.Save($writer) } finally { $writer.Close() }
+    }
+    return $removed
+}
+
+function Install-CommandIcon($inst, $plugin) {
+    $src = $plugin.IconSource
+    if (-not (Test-Path $src)) { return ('图标源文件缺失: ' + $src) }
 
     $imgDir = Join-Path $inst.DataDir 'Images\Commands'
     if (-not (Test-Path $imgDir)) { return ('图标目录不存在: ' + $imgDir) }
 
-    # 注意：$id 是 Int32，不能用 $id + '_x.ico'（左边是数字时 '+' 会当成数值加法）
-    $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
+    $id = Get-ApiCommandId $plugin.CommandClass
     $fileName = '{0}_IKUNtools.ico' -f $id
     $dst = Join-Path $imgDir $fileName
     try {
@@ -323,10 +454,10 @@ function Install-CommandIcon($inst, $backupRoot) {
     }
 }
 
-function Remove-CommandIcon($inst) {
+function Remove-CommandIcon($inst, $plugin) {
     $imgDir = Join-Path $inst.DataDir 'Images\Commands'
     if (-not (Test-Path $imgDir)) { return 0 }
-    $id = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
+    $id = Get-ApiCommandId $plugin.CommandClass
     $removed = 0
     foreach ($suffix in @('_IKUNtools.ico', '_NcNamer.ico')) {
         $dst = Join-Path $imgDir ('{0}{1}' -f $id, $suffix)
@@ -337,7 +468,7 @@ function Remove-CommandIcon($inst) {
     return $removed
 }
 
-# ---------- 4. 注入 BJ.EXF 的 NCMETA 行 ----------
+# ---------- 4. NC重命名 专属：EXF / DEX / 钩子 ----------
 function Inject-Exf($exfPath) {
     if (-not (Test-Path $exfPath)) { return "BJ.EXF 不存在" }
     $text = [IO.File]::ReadAllText($exfPath, [Text.Encoding]::Default)
@@ -358,7 +489,6 @@ function Inject-Exf($exfPath) {
     return $null
 }
 
-# ---------- 5. 编译 EXF -> DEX ----------
 function Compile-Dex($inst, $postDir) {
     $dfexf = Join-Path $inst.ProgramDir 'dfexf.exe'
     if (-not (Test-Path $dfexf)) { return "未找到 dfexf.exe" }
@@ -375,9 +505,6 @@ function Compile-Dex($inst, $postDir) {
     return $null
 }
 
-# ---------- 6. 写 BJ 钩子 ----------
-# 钩子先用 /ownerpid 探测发起后处理的 Cimatron 实例，再把 PID 传给命名进程。
-# 多开时只有该实例会应答取数请求，避免取到另一个窗口的数据。
 function Get-HookLine {
     return 'for /f "delims=" %%i in (''"%~dp0NcPostRename.exe" /ownerpid'') do start "" /min "%~dp0NcPostRename.exe" /owner=%%i'
 }
@@ -393,7 +520,6 @@ function Write-Hook($postDir, $hookName, $backupRoot) {
         if ($text -match [Regex]::Escape($hookLine)) { return 'already' }
     }
 
-    # 去掉历史版本留下的 NcPostRename 行（含旧式 start "");
     $lines = New-Object System.Collections.Generic.List[string]
     if ($exists) {
         foreach ($l in ($text -split "`r?`n")) {
@@ -411,122 +537,13 @@ function Write-Hook($postDir, $hookName, $backupRoot) {
     return $null
 }
 
-# ================= 主流程 =================
-Section 'NcNamer 安装程序'
-$backupRoot = New-BackupRoot
-Say ("备份目录: " + $backupRoot) 'Yellow'
-
-$installs = Find-Installations
-if ($installs.Count -eq 0) { Say '未探测到任何 Cimatron 安装' 'Red'; exit 1 }
-
-foreach ($inst in $installs) {
-    if ($OnlyVersion -and ($inst.Version -notlike "*$OnlyVersion*")) { continue }
-    Section ("版本 " + $inst.Version + "  (" + $inst.InstallDir + ")")
-    Say ("  Program : " + $inst.ProgramDir) 'Gray'
-    Say ("  Data    : " + $inst.DataDir) 'Gray'
-    Say ("  Post    : " + ($inst.PostDirs -join ' | ')) 'Gray'
-
-    if ($Uninstall) {
-        $gone = Remove-LegacyIcons $inst
-        if ($gone.Count -gt 0) { Say ("  已清除遗留图标文件 " + $gone.Count + " 个") 'Green' }
-        $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
-        if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
-        $iconGone = Remove-CommandIcon $inst
-        if ($iconGone -gt 0) { Say '  已移除命令图标' 'Green' }
-        if (Test-Path $inst.IniPath) {
-            $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version)
-            $kept = [IO.File]::ReadAllLines($inst.IniPath) | Where-Object { $_ -notmatch '^\s*NcNamer[^=]*=' }
-            [IO.File]::WriteAllLines($inst.IniPath, $kept, (New-Object System.Text.UTF8Encoding($false)))
-            Say '  已从 ExternalCommands.ini 移除注册' 'Green'
-        }
-        foreach ($pd in $inst.PostDirs) {
-            $h1 = Join-Path $pd 'BJ.BAT'; $h2 = Join-Path $pd 'BJ.CMD'
-            foreach ($h in @($h1, $h2)) {
-                if (Test-Path $h) {
-                    $txt = [IO.File]::ReadAllText($h, [Text.Encoding]::Default)
-                    if ($txt -match 'NcPostRename.exe') {
-                        $txt = ($txt -split "`r?`n" | Where-Object { $_ -notmatch 'NcPostRename.exe' }) -join "`r`n"
-                        [IO.File]::WriteAllText($h, $txt, (New-Object System.Text.UTF8Encoding($false)))
-                        Say ("  已清理钩子: " + $h) 'Green'
-                    }
-                }
-            }
-        }
-        continue
-    }
-
-    # 6a. 插件
-    if (-not $inst.HasPluginFx) {
-        Say '  [跳过] 该版本缺少插件框架(CimUIInfrastructure)，即 Cimatron E11 及更早版本' 'Yellow'
-        Say '         原因: E11 无插件接口可实时取数，其 GPP1 后处理也没有最小刀长变量，' 'Yellow'
-        Say '               无法满足"刀长必须及时准确"的要求。按 fail-closed 原则保持现状不安装。' 'Yellow'
-        Say '         可选出路: 将 BJ 后处理迁移到 GPP2(ex2) 后可用 XML_MIN_CLEAR_LEN 直出刀长，需现场开发。' 'Yellow'
-        continue
-    }
-
-    $dllName = 'NcNamerAutoService.dll'
-    $dllPath = Join-Path $inst.ProgramDir $dllName
-    if (Test-Path $dllPath) { $null = Backup-File $dllPath $backupRoot ('dll_' + $inst.Version) }
-
-    # 图标源文件必须和插件 DLL 放在同一目录，插件启动时据此投放到 Images\Commands
-    Copy-Item (Join-Path $CommonDir 'NcNamer_icon64.ico') (Join-Path $inst.ProgramDir 'NcNamer_icon64.ico') -Force
-
-    # 清掉早期版本留下的多余图标散件（保留 NcNamer_icon64.ico）
-    foreach ($legacy in @('NcNamer_icon64.png','NcNamer_icon32.png','NcNamer_icon16.png')) {
-        $p = Join-Path $inst.ProgramDir $legacy
-        if (Test-Path $p) { try { Remove-Item $p -Force } catch { } }
-    }
-
-    $err = Build-Plugin $inst $dllPath
-    if ($err) {
-        Say ("  现场编译失败: " + $err) 'Yellow'
-        $pre = Join-Path $PluginDir ('prebuilt_' + ($inst.Version -replace '\.0$', '') + '_NcNamerAutoService.dll')
-        if (Test-Path $pre) {
-            try {
-                Copy-Item $pre $dllPath -Force
-                Say ("  已改用预编译 DLL: " + (Split-Path $pre -Leaf)) 'Yellow'
-            } catch {
-                Say ("  预编译 DLL 也无法替换(DLL 被占用，请关闭 Cimatron 后重跑): " + $_.Exception.Message) 'Red'
-                continue
-            }
-        } else {
-            Say '  无可用预编译 DLL，插件安装失败' 'Red'
-            continue
-        }
-    } else {
-        Say ("  插件已编译: " + $dllPath) 'Green'
-    }
-
-    # 6a-2. 清掉早期版本留下的图标文件（不再使用自定义图标）
-    $gone = Remove-LegacyIcons $inst
-    if ($gone.Count -gt 0) { Say ("  已清除遗留图标文件 " + $gone.Count + " 个") 'Green' }
-
-    # 6b. 注册
-    if (Test-Path $inst.IniPath) { $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version) }
-    $entry = 'NcNamerAutoService.NcDumpPlugin=NcNamerAutoService.NcDumpPlugin@' + $FlagSuffix
-    $err = Register-Command $inst.IniPath $entry
-    if ($err) { Say ("  注册失败: " + $err) 'Red' } else { Say ("  已注册: " + $entry) 'Green' }
-
-    # 6b-2. 清掉历史版本堆积出来的匿名工具栏分组
-    $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
-    if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
-
-    # 6b-3. 投放命令图标（Cimatron 按命令 ID 在 Images\Commands 里查找）
-    $iconErr = Install-CommandIcon $inst $backupRoot
-    $iconId = Get-ApiCommandId 'NcNamerAutoService.NcDumpPlugin'
-    $iconFile = '{0}_IKUNtools.ico' -f $iconId
-    if ($iconErr) {
-        Say ("  图标安装失败: " + $iconErr) 'Yellow'
-    } else {
-        Say ("  图标已安装: " + $iconFile) 'Green'
-    }
-
-    # 6c. 后处理目录
+function Install-NcRenamePost($inst, $plugin, $backupRoot) {
+    $commonDir = Join-Path $plugin.Folder 'payload\common'
     foreach ($pd in $inst.PostDirs) {
         Say ("  -- post: " + $pd) 'Gray'
         $dst = Join-Path $pd 'NcPostRename.exe'
         if (Test-Path $dst) { $null = Backup-File $dst $backupRoot ('exe_' + $inst.Version) }
-        Copy-Item (Join-Path $CommonDir 'NcPostRename.exe') $dst -Force
+        Copy-Item (Join-Path $commonDir 'NcPostRename.exe') $dst -Force
         Say '     NcPostRename.exe 已部署' 'Green'
 
         foreach ($hook in @('BJ.BAT', 'BJ.CMD')) {
@@ -554,12 +571,177 @@ foreach ($inst in $installs) {
     }
 }
 
+function Uninstall-NcRenamePost($inst) {
+    foreach ($pd in $inst.PostDirs) {
+        foreach ($h in @((Join-Path $pd 'BJ.BAT'), (Join-Path $pd 'BJ.CMD'))) {
+            if (Test-Path $h) {
+                $txt = [IO.File]::ReadAllText($h, [Text.Encoding]::Default)
+                if ($txt -match 'NcPostRename.exe') {
+                    $txt = ($txt -split "`r?`n" | Where-Object { $_ -notmatch 'NcPostRename.exe' }) -join "`r`n"
+                    [IO.File]::WriteAllText($h, $txt, (New-Object System.Text.UTF8Encoding($false)))
+                    Say ("  已清理钩子: " + $h) 'Green'
+                }
+            }
+        }
+    }
+}
+
+# ================= 主流程 =================
+Section 'IKUN思美创工具箱 安装程序'
+$backupRoot = New-BackupRoot
+Say ("备份目录: " + $backupRoot) 'Yellow'
+
+$plugins = Get-Plugins
+if ($plugins.Count -eq 0) { Say '未找到任何插件清单 (plugins\*\plugin.json)' 'Red'; exit 1 }
+Say ("已加载插件: " + (($plugins | ForEach-Object { $_.DisplayName }) -join ' / ')) 'Gray'
+
+Section '更新器'
+$updaterErr = Build-Updater
+if ($updaterErr) {
+    Say ('  更新器编译失败: ' + $updaterErr) 'Yellow'
+} else {
+    Say ('  更新器已安装: ' + (Join-Path $env:USERPROFILE 'NcNamer\IKUNUpdater.exe')) 'Green'
+}
+
+$installs = Find-Installations
+if ($installs.Count -eq 0) { Say '未探测到任何 Cimatron 安装' 'Red'; exit 1 }
+
+foreach ($inst in $installs) {
+    if ($OnlyVersion -and ($inst.Version -notlike "*$OnlyVersion*")) { continue }
+    Section ("版本 " + $inst.Version + "  (" + $inst.InstallDir + ")")
+    Say ("  Program : " + $inst.ProgramDir) 'Gray'
+    Say ("  Data    : " + $inst.DataDir) 'Gray'
+    Say ("  Post    : " + ($inst.PostDirs -join ' | ')) 'Gray'
+
+    if ($Uninstall) {
+        foreach ($plugin in $plugins) {
+            $dllPath = Join-Path $inst.ProgramDir $plugin.Dll
+            if (Test-Path $dllPath) { $null = Backup-File $dllPath $backupRoot ('dll_' + $inst.Version + '_' + $plugin.FolderName) }
+
+            if (Test-Path $inst.IniPath) {
+                $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version)
+                if (Remove-CommandRegistration $inst.IniPath $plugin) {
+                    Say ("  已移除注册: " + $plugin.DisplayName) 'Green'
+                }
+            }
+
+            $iconGone = Remove-CommandIcon $inst $plugin
+            if ($iconGone -gt 0) { Say ("  已移除命令图标: " + $plugin.DisplayName) 'Green' }
+
+            if (Test-Path $dllPath) {
+                try {
+                    Remove-Item $dllPath -Force
+                    Say ("  已移除 DLL: " + $plugin.Dll) 'Green'
+                } catch {
+                    Say ("  DLL 删除失败(可能被占用): " + $_.Exception.Message) 'Yellow'
+                }
+            }
+
+            if ($plugin.PostProcess -eq 'nc-rename') {
+                $gone = Remove-LegacyIcons $inst
+                if ($gone.Count -gt 0) { Say ("  已清除遗留图标文件 " + $gone.Count + " 个") 'Green' }
+                $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
+                if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
+                Uninstall-NcRenamePost $inst
+            }
+        }
+        continue
+    }
+
+    if (-not $inst.HasPluginFx) {
+        Say '  [跳过] 该版本缺少插件框架(CimUIInfrastructure)，即 Cimatron E11 及更早版本' 'Yellow'
+        Say '         原因: E11 无插件接口可实时取数，其 GPP1 后处理也没有最小刀长变量，' 'Yellow'
+        Say '               无法满足"刀长必须及时准确"的要求。按 fail-closed 原则保持现状不安装。' 'Yellow'
+        Say '         可选出路: 将 BJ 后处理迁移到 GPP2(ex2) 后可用 XML_MIN_CLEAR_LEN 直出刀长，需现场开发。' 'Yellow'
+        continue
+    }
+
+    $iniBackedUp = $false
+
+    foreach ($plugin in $plugins) {
+        Say ("  ── " + $plugin.DisplayName) 'Cyan'
+
+        $dllPath = Join-Path $inst.ProgramDir $plugin.Dll
+        if (Test-Path $dllPath) { $null = Backup-File $dllPath $backupRoot ('dll_' + $inst.Version + '_' + $plugin.FolderName) }
+
+        # 图标源文件必须和插件 DLL 放在同一目录，插件启动时据此投放到 Images\Commands
+        if (Test-Path $plugin.IconSource) {
+            $iconLeaf = Split-Path $plugin.IconSource -Leaf
+            Copy-Item $plugin.IconSource (Join-Path $inst.ProgramDir $iconLeaf) -Force
+        }
+
+        if ($plugin.PostProcess -eq 'nc-rename') {
+            foreach ($legacy in @('NcNamer_icon64.png', 'NcNamer_icon32.png', 'NcNamer_icon16.png')) {
+                $p = Join-Path $inst.ProgramDir $legacy
+                if (Test-Path $p) { try { Remove-Item $p -Force } catch { } }
+            }
+        }
+
+        $err = Build-Plugin $inst $plugin $dllPath
+        if ($err) {
+            Say ("  现场编译失败: " + $err) 'Yellow'
+            $major = $inst.Version -replace '\.0$', ''
+            $pre = $plugin.PrebuiltPattern.Replace('{version}', $major)
+            if (Test-Path $pre) {
+                try {
+                    Copy-Item $pre $dllPath -Force
+                    Say ("  已改用预编译 DLL: " + (Split-Path $pre -Leaf)) 'Yellow'
+                } catch {
+                    Say ("  预编译 DLL 也无法替换(DLL 被占用，请关闭 Cimatron 后重跑): " + $_.Exception.Message) 'Red'
+                    continue
+                }
+            } else {
+                Say ("  无可用预编译 DLL，插件安装失败: " + $plugin.DisplayName) 'Red'
+                continue
+            }
+        } else {
+            Say ("  插件已编译: " + $dllPath) 'Green'
+        }
+
+        if (-not $iniBackedUp -and (Test-Path $inst.IniPath)) {
+            $null = Backup-File $inst.IniPath $backupRoot ('ini_' + $inst.Version)
+            $iniBackedUp = $true
+        }
+        $flag = $FlagSuffix
+        if (-not $AutoLoadOff -and (Test-CommandInPartMenu $inst.DataDir $plugin.CommandClass)) {
+            $flag = '0'
+            Say '  Part 菜单已包含该命令，注册为 @0（避免重复插入）' 'Gray'
+        } elseif (-not $AutoLoadOff) {
+            Say '  Part 菜单尚无该命令，注册为 @1（首次插入）' 'Gray'
+        }
+        $entry = $plugin.CommandClass + '=' + $plugin.CommandClass + '@' + $flag
+        $err = Register-Command $inst.IniPath $plugin $entry
+        if ($err) { Say ("  注册失败: " + $err) 'Red' } else { Say ("  已注册: " + $entry) 'Green' }
+
+        if ($plugin.PostProcess -eq 'nc-rename') {
+            $stray = Remove-StrayToolbarGroups $inst.DataDir $backupRoot
+            if ($stray -gt 0) { Say ("  已清理堆积的工具栏按钮 " + $stray + " 个") 'Green' }
+        }
+
+        $iconErr = Install-CommandIcon $inst $plugin
+        $iconId = Get-ApiCommandId $plugin.CommandClass
+        $iconFile = '{0}_IKUNtools.ico' -f $iconId
+        if ($iconErr) {
+            Say ("  图标安装失败: " + $iconErr) 'Yellow'
+        } else {
+            Say ("  图标已安装: " + $iconFile) 'Green'
+        }
+
+        if ($plugin.PostProcess -eq 'nc-rename') {
+            Install-NcRenamePost $inst $plugin $backupRoot
+        }
+    }
+
+    $deduped = Remove-DuplicateToolbarItems $inst.DataDir $backupRoot
+    if ($deduped -gt 0) { Say ("  已清理重复的工具栏按钮 " + $deduped + " 个") 'Green' }
+}
+
 Section '安装结果'
 Say '已处理版本:' 'Cyan'
 foreach ($inst in $installs) { Say ('  - Cimatron ' + $inst.Version) }
 Say ''
 Say '生效条件: 重启 Cimatron（插件在启动时加载，无需手工点击）' 'Yellow'
-Say '日志位置: %USERPROFILE%\NcNamer\auto_service_log.txt 与 post_rename_log.txt' 'Gray'
+Say '日志位置: %USERPROFILE%\NcNamer\auto_service_log.txt、post_rename_log.txt、pin_flatten_log.txt' 'Gray'
 Say ("备份位置: " + $backupRoot) 'Gray'
 
 $logPath = Join-Path (Join-Path $env:USERPROFILE 'NcNamer') 'install_report.txt'

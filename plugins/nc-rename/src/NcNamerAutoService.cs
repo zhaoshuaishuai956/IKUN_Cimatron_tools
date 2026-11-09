@@ -31,7 +31,8 @@ namespace NcNamerAutoService
                 Caption = "NC重命名",
                 ToolTip = "自动 NC 命名（BJ 后处理后自动重命名）",
                 Description = "IKUN思美创工具箱 · NC重命名：后处理完成后自动命名为 序号-刀名-刀长 nc.bj",
-                Application = ApiApplications.Nc | ApiApplications.NcPart,
+                // 普通 Part 文档也显示 NC 菜单，避免在 Part 里看不到工具箱的 NC 分组
+                Application = ApiApplications.Nc | ApiApplications.NcPart | ApiApplications.Part,
                 ExecuteCommand = new NcAutoServiceCommand(),
                 IconSize = ApiIconSize.Large,
                 License = "1"
@@ -112,35 +113,26 @@ namespace NcNamerAutoService
                     try
                     {
                         var form = new System.Windows.Forms.Form();
-                        form.Text = "IKUN思美创工具箱";
+                        form.Text = "IKUN工具箱";
                         form.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
                         form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
                         form.MaximizeBox = false;
                         form.MinimizeBox = false;
                         form.TopMost = true;
-                        form.ClientSize = new System.Drawing.Size(370, 150);
+                        form.ClientSize = new System.Drawing.Size(330, 100);
                         form.BackColor = System.Drawing.Color.White;
 
                         var title = new System.Windows.Forms.Label();
-                        title.Text = "IKUN思美创工具箱 已加载";
+                        title.Text = "IKUN工具箱已加载";
                         title.Font = new System.Drawing.Font("Microsoft YaHei", 15F, System.Drawing.FontStyle.Bold);
                         title.ForeColor = System.Drawing.Color.FromArgb(31, 78, 121);
                         title.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-                        title.SetBounds(10, 22, 350, 40);
+                        title.SetBounds(10, 18, 310, 38);
                         form.Controls.Add(title);
-
-                        var sub = new System.Windows.Forms.Label();
-                        sub.Text = "NC重命名：后处理完成后自动重命名程序" + Environment.NewLine
-                                 + "菜单位置：IKUN思美创工具箱 → NC";
-                        sub.Font = new System.Drawing.Font("Microsoft YaHei", 9F);
-                        sub.ForeColor = System.Drawing.Color.DimGray;
-                        sub.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-                        sub.SetBounds(10, 64, 350, 44);
-                        form.Controls.Add(sub);
 
                         var ok = new System.Windows.Forms.Button();
                         ok.Text = "知道了";
-                        ok.SetBounds(145, 112, 80, 28);
+                        ok.SetBounds(125, 62, 80, 28);
                         ok.Click += delegate { form.Close(); };
                         form.Controls.Add(ok);
                         form.AcceptButton = ok;
@@ -320,6 +312,9 @@ namespace NcNamerAutoService
 
             // 放在锁外：每个 Cimatron 实例启动都会提示一次
             try { ShowStartupNotice(); } catch { }
+
+            // 启动后异步检查 GitHub Release；不阻塞 Cimatron 启动。
+            try { ToolboxUpdateService.StartCheck(); } catch (Exception ex) { AppendLog("AutoUpdate start failed: " + ex.Message); }
         }
 
         private static void OnRenamed(object sender, RenamedEventArgs e)
